@@ -56,4 +56,4 @@ LOG_FILE       = os.path.join(BASE_DIR, "logs", "app.log")
 # Android disk mount
 # ---------------------------------------------------------------------------
 MOUNT_POINT         = "/mnt/android"
-DRIVE1_CANDIDATES   = ["/dev/vdb1", "/dev/vdb", "/dev/sdb1", "/dev/sdb"]
+DRIVE1_CANDIDATES   = ["/dev/vdb2", "/dev/vdb1", "/dev/vdb", "/dev/sdb2", "/dev/sdb1", "/dev/sdb"]

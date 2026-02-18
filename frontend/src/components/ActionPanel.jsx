@@ -1,6 +1,8 @@
 import React from 'react'
+import { useTranslation } from 'react-i18next'
 
 export default function ActionPanel({ selectedCount, onDelete, onDisconnect, loading, connected }) {
+  const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-3">
       {/* Delete selected */}
@@ -24,7 +26,7 @@ export default function ActionPanel({ selectedCount, onDelete, onDisconnect, loa
               <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
               <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
             </svg>
-            Deleting…
+            {t('dashboard.delete')}…
           </>
         ) : (
           <>
@@ -32,7 +34,7 @@ export default function ActionPanel({ selectedCount, onDelete, onDisconnect, loa
               <path strokeLinecap="round" strokeLinejoin="round"
                 d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
             </svg>
-            Delete Selected
+            {t('dashboard.delete_selected')}
             {selectedCount > 0 && (
               <span className="ml-1 px-2 py-0.5 rounded-full bg-red-500/30 text-xs">
                 {selectedCount}
@@ -61,7 +63,7 @@ export default function ActionPanel({ selectedCount, onDelete, onDisconnect, loa
           <path strokeLinecap="round" strokeLinejoin="round"
             d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
         </svg>
-        Save &amp; Exit
+        {t('dashboard.save_exit')}
       </button>
     </div>
   )

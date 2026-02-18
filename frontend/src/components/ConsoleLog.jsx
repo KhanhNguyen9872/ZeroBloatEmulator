@@ -10,7 +10,7 @@ export default function ConsoleLog({ logs, onClear }) {
   }, [logs])
 
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[#0b0d14] overflow-hidden flex flex-col h-full">
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] overflow-hidden flex flex-col h-full">
       {/* Title bar */}
       <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--border)] bg-[var(--bg-card)] shrink-0">
         <div className="flex gap-1.5">
@@ -39,10 +39,10 @@ export default function ConsoleLog({ logs, onClear }) {
           logs.map((line, i) => {
              const txt = typeof line === 'string' ? line : (line.message || JSON.stringify(line))
              
-             const color = txt.includes('[ERROR]') ? 'text-red-400'
-               : txt.includes('[WARNING]') ? 'text-amber-400'
-               : txt.includes('[INFO]') ? 'text-zinc-300'
-               : 'text-zinc-500'
+             const color = txt.includes('[ERROR]') ? 'text-red-500'
+               : txt.includes('[WARNING]') ? 'text-amber-600'
+               : txt.includes('[INFO]') ? 'text-[var(--text-primary)]'
+               : 'text-[var(--text-muted)]'
 
             return <div key={i} className={`break-all ${color}`}>{txt}</div>
           })

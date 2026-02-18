@@ -1,7 +1,9 @@
 import React from 'react'
 import { motion } from 'framer-motion'
+import { useTranslation } from 'react-i18next'
 
 export default function DetectionScreen() {
+  const { t } = useTranslation()
   return (
     <div className="min-h-screen bg-[var(--bg-primary)] flex flex-col items-center justify-center gap-10">
       {/* Radar rings */}
@@ -40,10 +42,10 @@ export default function DetectionScreen() {
         className="flex flex-col items-center gap-2 text-center"
       >
         <h2 className="text-xl font-semibold text-[var(--text-primary)]">
-          Analyzing Emulator Structure…
+          {t('detection.analyzing')}
         </h2>
         <p className="text-sm text-[var(--text-muted)]">
-          Scanning for known emulator signatures and Android images
+          {t('detection.scanning')}
         </p>
       </motion.div>
 

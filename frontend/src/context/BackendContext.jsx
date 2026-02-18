@@ -26,11 +26,6 @@ export function BackendProvider({ children }) {
     try {
       await HealthAPI.ping()
       setIsConnected(true)
-      // Refresh admin status on each successful connection
-      try {
-        const { data } = await SystemAPI.getAdminStatus()
-        setIsAdmin(data.is_admin ?? false)
-      } catch { /* non-critical */ }
     } catch {
       setIsConnected(false)
     } finally {

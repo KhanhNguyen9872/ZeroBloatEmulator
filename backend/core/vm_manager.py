@@ -62,13 +62,13 @@ class QemuManager:
         """
         if self.is_running:
             raise RuntimeError(
-                f"A QEMU VM is already running (PID {self.pid}). "
+                f"A Core VM is already running (PID {self.pid}). "
                 "Call stop_service() first."
             )
 
         if not os.path.isfile(cfg.QEMU_EXECUTABLE):
             raise FileNotFoundError(
-                f"QEMU executable not found: {cfg.QEMU_EXECUTABLE!r}. "
+                f"Core binary not found: {cfg.QEMU_EXECUTABLE!r}. "
                 "Run from the project root directory."
             )
 
@@ -102,7 +102,7 @@ class QemuManager:
 
             cmd += ["-drive", f"file={target_path},format={disk_fmt},if=virtio,index=1"]
 
-        logger.info(f"[CORE] CMD: {" ".join(cmd)}")
+        logger.debug(f"[CORE] CMD: {" ".join(cmd)}")
         # Redirect output to qemu.log for debugging
         log_path = os.path.join(os.path.dirname(cfg.LOG_FILE), "qemu.log")
         self._log_file = open(log_path, "w", encoding="utf-8")
@@ -143,13 +143,13 @@ class QemuManager:
                 self.current_process.terminate()
                 try:
                     self.current_process.wait(timeout=2)
-                    logger.info("[CORE] Service stopped (PID %d) via SIGTERM.", pid)
+                    logger.info("[CORE] Core stopped (PID %d).", pid)
                 except subprocess.TimeoutExpired:
-                    logger.warning("[CORE] PID %d did not exit – sending SIGKILL.", pid)
+                    logger.warning("[CORE] PID %d did not exit – forcing shutdown.", pid)
                     self.current_process.kill()
                     self.current_process.wait()
                     self.current_process = None # Ensure we clear it
-                    logger.info("[CORE] Service stopped (PID %d) via SIGKILL.", pid)
+                    logger.info("[CORE] Core force-stopped (PID %d).", pid)
             except Exception as exc:
                 logger.error("[CORE] Error stopping service: %s", exc)
             finally:
@@ -166,9 +166,9 @@ class QemuManager:
                 except psutil.TimeoutExpired:
                     proc.kill()
                     proc.wait()
-                logger.info("[CORE] Attached service stopped (PID %d).", self._attached_pid)
+                logger.info("[CORE] Attached Core Process stopped (PID %d).", self._attached_pid)
             except psutil.NoSuchProcess:
-                logger.info("[CORE] Attached PID %d already gone.", self._attached_pid)
+                logger.info("[CORE] Attached Core PID %d already gone.", self._attached_pid)
             except Exception as exc:
                 logger.error("[CORE] Error stopping attached service: %s", exc)
             finally:
@@ -203,7 +203,7 @@ class QemuManager:
         if not pid:
             return False
 
-        logger.info("[CORE] Found existing Core Process (PID %d). Attempting to reconnect...", pid)
+        logger.info("[CORE] Recovering existing Core session (PID %d)...", pid)
         
         # Verify it's actually responsive via SSH
         if ssh_worker.check_health():

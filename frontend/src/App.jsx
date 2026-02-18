@@ -3,13 +3,15 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
 
 import { BackendProvider, useBackend } from './context/BackendContext'
-import { DetectAPI, SystemAPI } from './services/api'
+import { DetectAPI, SystemAPI, CoreAPI, LogsAPI } from './services/api'
 import GlobalHeader from './components/GlobalHeader'
 import IntroPage from './pages/IntroPage'
 import FolderBrowserModal from './components/FolderBrowserModal'
 import DetectionPage from './pages/DetectionPage'
 import SelectionPage from './pages/SelectionPage'
 import DashboardPage from './pages/DashboardPage'
+import ConfirmDialog from './components/ConfirmDialog'
+import ErrorBoundary from './components/ErrorBoundary'
 
 const SCREENS = {
   INTRO: 'intro',
@@ -58,8 +60,32 @@ function AppInner() {
   const [selectedVersionId, setSelectedVersionId] = useState(null)
   const [isPathRestored, setIsPathRestored] = useState(false)
   const [shouldAutoStart, setShouldAutoStart] = useState(false)
+  const [isDuplicateInstance, setIsDuplicateInstance] = useState(false)
+  
+  // Custom confirm dialog state
+  const [confirmState, setConfirmState] = useState({ isOpen: false, onConfirm: null })
 
   useDocTitle(screen, showBrowser, detectionResult)
+
+  // ── Single Instance Check ───────────────────────────────────────────────────
+  useEffect(() => {
+    const channel = new BroadcastChannel('zerobloat_emulator_instance')
+    
+    // Broadcast check to other tabs
+    channel.postMessage({ type: 'CHECK_EXISTING' })
+
+    channel.onmessage = (event) => {
+      if (event.data.type === 'CHECK_EXISTING') {
+        // I am the existing tab, tell the new tab I'm here
+        channel.postMessage({ type: 'INSTANCE_EXISTS' })
+      } else if (event.data.type === 'INSTANCE_EXISTS') {
+        // I am the new tab, I found another instance
+        setIsDuplicateInstance(true)
+      }
+    }
+
+    return () => channel.close()
+  }, [])
 
   // ── Persistence & Validation ────────────────────────────────────────────────
   // ── Persistence & Validation ────────────────────────────────────────────────
@@ -130,13 +156,31 @@ function AppInner() {
   }
 
   const handleResetSession = () => {
-    if (window.confirm('Are you sure you want to switch folders? Current session will be cleared.')) {
+    setConfirmState({
+      isOpen: true,
+      onConfirm: async () => {
+        setConfirmState({ isOpen: false, onConfirm: null })
+        // If we are in dashboard and VM is starting/running, stop it
+        if (screen === SCREENS.DASHBOARD) {
+          try {
+            await CoreAPI.stop()
+            await LogsAPI.clear()
+          } catch (err) {
+            console.error("Failed to stop core/clear logs during reset:", err)
+          }
+        }
+
         localStorage.removeItem('last_emulator_path')
         localStorage.removeItem('last_android_version')
+        sessionStorage.removeItem('cachedApps')
+        sessionStorage.removeItem('cachedCategoryRoots')
+        sessionStorage.removeItem('lastRefreshTime')
+        
         setDetectionResult(null)
         setSelectedVersionId(null)
         setScreen(SCREENS.INTRO)
-    }
+      }
+    })
   }
 
   const handleStart = (versionId) => {
@@ -147,9 +191,38 @@ function AppInner() {
     setScreen(SCREENS.DASHBOARD)
   }
 
-  const handleRetry = () => { setDetectionResult(null); setScreen(SCREENS.INTRO) }
+  const handleRetry = () => { 
+    sessionStorage.removeItem('cachedApps')
+    sessionStorage.removeItem('cachedCategoryRoots')
+    sessionStorage.removeItem('lastRefreshTime')
+    LogsAPI.clear().catch(() => {})
+    setDetectionResult(null)
+    setScreen(SCREENS.INTRO) 
+  }
   const handleDisconnect = () => { setDetectionResult(null); setSelectedVersionId(null); setScreen(SCREENS.INTRO) }
   
+  if (isDuplicateInstance) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-primary)] p-6 text-center">
+        <div className="w-16 h-16 bg-red-500/10 text-red-500 rounded-full flex items-center justify-center mb-6 border border-red-500/20">
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <h1 className="text-xl font-bold text-[var(--text-primary)] mb-2">Another instance is already running</h1>
+        <p className="text-sm text-[var(--text-muted)] max-w-xs">
+          ZeroBloatEmulator can only be active in one browser tab at a time to prevent session conflicts.
+        </p>
+        <button 
+          onClick={() => window.location.reload()}
+          className="mt-8 px-5 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-semibold hover:bg-[var(--accent-hover)] transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    )
+  }
+
   if (!isPathRestored) {
       return (
           <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-primary)]">
@@ -182,7 +255,7 @@ function AppInner() {
               <div className="absolute inset-0 backdrop-blur-[3px] bg-white/30 dark:bg-zinc-950/40" />
               <div className="absolute bottom-8 left-1/2 -translate-x-1/2 pointer-events-none">
                 <motion.div
-                  initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ opacity: 16, opacity: 0 }}
+                  initial={{ y: 16, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 16, opacity: 0 }}
                   className="flex items-center gap-2.5 px-4 py-2.5 rounded-full shadow-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 text-sm font-medium text-zinc-700 dark:text-zinc-300"
                 >
                   <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse shrink-0" />
@@ -225,15 +298,26 @@ function AppInner() {
           )}
         </AnimatePresence>
       </div>
+
+      <ConfirmDialog
+        isOpen={confirmState.isOpen}
+        title="Switch Project?"
+        message="Are you sure you want to switch folders? Your current session and any running core will be stopped."
+        onConfirm={confirmState.onConfirm}
+        onCancel={() => setConfirmState({ isOpen: false, onConfirm: null })}
+        type="warning"
+      />
     </div>
   )
 }
 
 export default function App() {
   return (
-    <BackendProvider>
-      <Toaster position="bottom-right" />
-      <AppInner />
-    </BackendProvider>
+    <ErrorBoundary>
+      <BackendProvider>
+        <Toaster position="bottom-right" />
+        <AppInner />
+      </BackendProvider>
+    </ErrorBoundary>
   )
 }

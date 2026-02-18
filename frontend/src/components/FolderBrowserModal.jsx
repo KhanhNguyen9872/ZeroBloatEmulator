@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { SystemAPI } from '../services/api'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
+import ConfirmDialog from './ConfirmDialog'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 function FolderIcon() {
@@ -60,48 +62,10 @@ function ChevronUp() {
   )
 }
 
-// ── Confirm dialog (elevation) ────────────────────────────────────────────────
-function ConfirmDialog({ title, message, onConfirm, onCancel }) {
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.95 }}
-        transition={{ duration: 0.18 }}
-        className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-5 sm:p-6 w-full max-w-sm shadow-2xl"
-      >
-        <div className="flex items-center gap-3 mb-3">
-          <div className="w-9 h-9 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center shrink-0">
-            <svg className="w-4 h-4 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round"
-                d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-            </svg>
-          </div>
-          <h3 className="text-sm font-bold text-[var(--text-primary)]">{title}</h3>
-        </div>
-        <p className="text-xs sm:text-sm text-[var(--text-muted)] mb-5 leading-relaxed whitespace-pre-line">{message}</p>
-        <div className="flex gap-2">
-          <button
-            onClick={onCancel}
-            className="flex-1 py-2.5 rounded-lg border border-[var(--border)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors touch-manipulation"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className="flex-1 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-white text-sm font-semibold transition-colors touch-manipulation"
-          >
-            Restart as Admin
-          </button>
-        </div>
-      </motion.div>
-    </div>
-  )
-}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function FolderBrowserModal({ onConfirm, onClose }) {
+  const { t } = useTranslation()
   const [drives, setDrives] = useState([])
   const [currentPath, setCurrentPath] = useState(null)
   const [entries, setEntries] = useState([])
@@ -202,22 +166,21 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
     if (!currentPath) return
     const sep = currentPath.includes('/') ? '/' : '\\'
     const lnkPath = currentPath.replace(/[/\\]$/, '') + sep + lnkName
-    setResolving(true)
     try {
       const { data } = await SystemAPI.resolveShortcut(lnkPath)
-      toast.success(`Shortcut resolved \u2192 ${data.target}`)
+      toast.success(`${t('folder_browser.shortcut')} resolved \u2192 ${data.target}`)
       onConfirm(data.target)
     } catch (err) {
       toast.error(err.response?.data?.message ?? 'Could not resolve shortcut.')
     } finally {
       setResolving(false)
     }
-  }, [currentPath, onConfirm])
+  }, [currentPath, onConfirm, t])
 
   // ── Elevation ─────────────────────────────────────────────────────────────
   const handleElevate = async () => {
     setShowElevateDialog(false)
-    toast.info('Restarting as Administrator\u2026', { duration: 6000 })
+    toast.info(t('admin.restarting'), { duration: 6000 })
     try { await SystemAPI.elevate() } catch { /* expected */ }
   }
 
@@ -308,7 +271,7 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
 
           {/* Header */}
           <div className="flex items-center justify-between px-4 sm:px-5 py-3 border-b border-[var(--border)] shrink-0">
-            <h2 className="font-semibold text-sm text-[var(--text-primary)]">Browse Emulator Folder</h2>
+            <h2 className="font-semibold text-sm text-[var(--text-primary)]">{t('folder_browser.title')}</h2>
             <button
               onClick={onClose}
               className="w-8 h-8 rounded-lg flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-secondary)] transition-colors touch-manipulation"
@@ -321,7 +284,7 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
           <div className="px-4 sm:px-5 py-2 border-b border-[var(--border)] shrink-0">
             <div className="flex gap-1.5 overflow-x-auto scrollbar-none pb-0.5">
               <button onClick={goToDesktop} className={tabCls(isDesktopActive)}>
-                Desktop
+                {t('folder_browser.desktop')}
               </button>
               {drives.map((drive) => (
                 <button
@@ -337,13 +300,13 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
 
           {/* Address bar: [<] [>] [^] | [input] [Go] */}
           <div className="px-4 sm:px-5 py-2.5 border-b border-[var(--border)] shrink-0 flex items-center gap-1.5">
-            <button onClick={goBack} disabled={!canGoBack} className={navBtnCls(canGoBack)} title="Back">
+            <button onClick={goBack} disabled={!canGoBack} className={navBtnCls(canGoBack)} title={t('folder_browser.back_hint')}>
               <ChevronLeft />
             </button>
-            <button onClick={goForward} disabled={!canGoForward} className={navBtnCls(canGoForward)} title="Forward">
+            <button onClick={goForward} disabled={!canGoForward} className={navBtnCls(canGoForward)} title={t('folder_browser.forward_hint')}>
               <ChevronRight />
             </button>
-            <button onClick={navigateUp} disabled={!currentPath} className={navBtnCls(!!currentPath)} title="Go up">
+            <button onClick={navigateUp} disabled={!currentPath} className={navBtnCls(!!currentPath)} title={t('folder_browser.go_up_hint')}>
               <ChevronUp />
             </button>
 
@@ -355,7 +318,7 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
               value={addressValue}
               onChange={(e) => setAddressValue(e.target.value)}
               onKeyDown={handleAddressKeyDown}
-              placeholder="Type or paste a path..."
+              placeholder={t('folder_browser.address_placeholder')}
               className="flex-1 h-8 px-3 rounded-md text-sm bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)] transition-colors font-mono"
             />
 
@@ -364,7 +327,7 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
               disabled={!addressValue.trim()}
               className="h-8 px-3 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-xs font-semibold disabled:opacity-40 transition-colors touch-manipulation shrink-0"
             >
-              Go
+              {t('folder_browser.go')}
             </button>
           </div>
 
@@ -391,7 +354,7 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
             {resolving && (
               <div className="absolute inset-0 bg-[var(--bg-card)]/80 flex items-center justify-center z-10 gap-2 text-[var(--text-muted)]">
                 <SpinnerIcon className="w-5 h-5" />
-                <span className="text-sm">Resolving shortcut...</span>
+                <span className="text-sm">{t('folder_browser.resolving')}</span>
               </div>
             )}
 
@@ -400,21 +363,21 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
                 <svg className="w-8 h-8 opacity-40" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
                 </svg>
-                <p className="text-sm text-center">Select a drive or click Desktop to start browsing</p>
+                <p className="text-sm text-center">{t('common.select_drive')}</p>
               </div>
             )}
 
             {loading && (
               <div className="flex items-center justify-center py-12 gap-2 text-[var(--text-muted)]">
                 <SpinnerIcon />
-                <span className="text-sm">Loading...</span>
+                <span className="text-sm">{t('common.loading')}</span>
               </div>
             )}
 
             {error && <p className="text-sm text-red-500 text-center py-8">{error}</p>}
 
             {!loading && !error && entries.length === 0 && currentPath && (
-              <p className="text-sm text-[var(--text-muted)] text-center py-10">No folders or shortcuts found</p>
+              <p className="text-sm text-[var(--text-muted)] text-center py-10">{t('folder_browser.no_folders')}</p>
             )}
 
             {!loading && entries.map((entry) => (
@@ -426,10 +389,10 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
                 {entry.type === 'lnk' ? <ShortcutIcon /> : <FolderIcon />}
                 <span className="flex-1 truncate">{entry.name}</span>
                 {entry.type === 'lnk' && (
-                  <span className="text-xs text-[var(--accent)] opacity-70 shrink-0 hidden sm:block">Shortcut {'\u2192'}</span>
+                  <span className="text-xs text-[var(--accent)] opacity-70 shrink-0 hidden sm:block">{t('folder_browser.shortcut')} {'\u2192'}</span>
                 )}
                 {entry.type === 'dir' && (
-                  <span className="text-[var(--text-muted)] opacity-0 group-hover:opacity-60 transition-opacity text-xs hidden sm:block">Open {'\u2192'}</span>
+                  <span className="text-[var(--text-muted)] opacity-0 group-hover:opacity-60 transition-opacity text-xs hidden sm:block">{t('folder_browser.open')} {'\u2192'}</span>
                 )}
               </button>
             ))}
@@ -439,14 +402,14 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
           <div className="px-4 sm:px-5 py-3 border-t border-[var(--border)] flex items-center gap-2 shrink-0">
             <div className="flex-1 min-w-0">
               <p className="text-xs text-[var(--text-muted)] truncate" title={currentPath ?? ''}>
-                {currentPath ? `Selected: ${currentPath}` : 'No folder selected'}
+                {currentPath ? t('folder_browser.selected_hint', { path: currentPath }) : t('common.no_folder')}
               </p>
             </div>
             <button
               onClick={onClose}
               className="px-3 py-2 rounded-md text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors touch-manipulation"
             >
-              Cancel
+              {t('common.cancel')}
             </button>
             <motion.button
               whileHover={currentPath ? { scale: 1.02 } : {}}
@@ -460,7 +423,7 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
                   : 'bg-[var(--accent)]/20 text-[var(--accent)]/40 cursor-not-allowed',
               ].join(' ')}
             >
-              Select
+              {t('folder_browser.select_btn')}
             </motion.button>
           </div>
         </motion.div>
@@ -470,10 +433,13 @@ export default function FolderBrowserModal({ onConfirm, onClose }) {
       <AnimatePresence>
         {showElevateDialog && (
           <ConfirmDialog
-            title="Admin Privileges Required"
-            message={`This folder requires higher privileges to access.\n\nDo you want to restart the application as Administrator?`}
+            title={t('admin.dialog_title')}
+            message={t('admin.dialog_msg')}
+            confirmText={t('admin.restart_btn')}
+            cancelText={t('common.cancel')}
             onConfirm={handleElevate}
             onCancel={() => setShowElevateDialog(false)}
+            type="warning"
           />
         )}
       </AnimatePresence>

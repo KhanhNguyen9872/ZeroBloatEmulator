@@ -43,9 +43,6 @@ export const SystemAPI = {
   resolveShortcut: (path) =>
     apiClient.post('/api/system/resolve', { path }),
 
-  /** Check whether the backend is running as Administrator. */
-  getAdminStatus: () =>
-    apiClient.get('/api/system/admin-status'),
 
   /** Validate if a path exists on the server. */
   validatePath: (path) =>
@@ -75,11 +72,26 @@ export const CoreAPI = {
     apiClient.get('/api/core/status'),
 }
 
+// ── Apps ──────────────────────────────────────────────────────────────────────
+export const AppsAPI = {
+  /** Rename an app folder / file. */
+  rename: (path, newName) =>
+    apiClient.post('/api/apps/rename', { path, new_name: newName }),
+
+  /** Move an app to a new category. */
+  move: (path, newCategoryRoot) =>
+    apiClient.post('/api/apps/move', { path, new_category_root: newCategoryRoot }),
+}
+
 // ── Logs ──────────────────────────────────────────────────────────────────────
 export const LogsAPI = {
   /** Fetch the last N lines from the backend log. */
   getTail: (n = 50) =>
     apiClient.get('/api/logs', { params: { n } }),
+
+  /** Clear the backend log file. */
+  clear: () =>
+    apiClient.post('/api/logs/clear'),
 }
 
 // ── Emulator detection ────────────────────────────────────────────────────────

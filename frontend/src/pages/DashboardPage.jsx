@@ -6,6 +6,8 @@ import { useTranslation } from 'react-i18next'
 import { useBackend } from '../context/BackendContext'
 import AppList from '../components/AppList'
 import ConsoleLog from '../components/ConsoleLog'
+import AddAppModal from '../components/AddAppModal'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { CoreAPI, LogsAPI } from '../services/api'
 import apiClient from '../services/api'
 
@@ -41,8 +43,14 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   const { t } = useTranslation()
   const { isConnected, isAdmin } = useBackend()
   const [coreStatus, setCoreStatus] = useState('stopped')
+  const [isAndroidMounted, setIsAndroidMounted] = useState(true)
   const [actionLoading, setActionLoading] = useState(false)
-  const [apps, setApps] = useState({})
+  const [apps, setApps] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('cachedApps')
+      return saved ? JSON.parse(saved) : {}
+    } catch { return {} }
+  })
   const [appsLoading, setAppsLoading] = useState(false)
   const [selected, setSelected] = useState(new Set())
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -50,23 +58,54 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   
   // Track the actual path the VM was started with to detect prompt changes
   const [runningPath, setRunningPath] = useState(null)
+  const [packagesLoaded, setPackagesLoaded] = useState(false)
+  const [confirmDeepScan, setConfirmDeepScan] = useState(false)
+  const [showAddApp, setShowAddApp] = useState(false)
+  const [categoryRoots, setCategoryRoots] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('cachedCategoryRoots')
+      return saved ? JSON.parse(saved) : {}
+    } catch { return {} }
+  })
   
   const [profiles, setProfiles] = useState([])
   const [loadingProfile, setLoadingProfile] = useState(null)
+  const [lastRefresh, setLastRefresh] = useState(() => sessionStorage.getItem('lastRefreshTime') || null)
   
   const pollRef = useRef(null)
+  const hasAutoScanned = useRef(false)
+
+  // Sync to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem('cachedApps', JSON.stringify(apps))
+  }, [apps])
+
+  useEffect(() => {
+    sessionStorage.setItem('cachedCategoryRoots', JSON.stringify(categoryRoots))
+  }, [categoryRoots])
+
+  useEffect(() => {
+    if (lastRefresh) sessionStorage.setItem('lastRefreshTime', lastRefresh)
+    else sessionStorage.removeItem('lastRefreshTime')
+  }, [lastRefresh])
 
   // ── Polling ───────────────────────────────────────────────────────────────
   const fetchStatus = useCallback(async () => {
     try {
       const { data } = await CoreAPI.getStatus()
       setCoreStatus(data.status)
+      setIsAndroidMounted(data.is_android_mounted ?? true)
       // If we recover a running session, we might not know the original path.
       // But usually we start from stopped.
       if (data.status === 'stopped') {
           setRunningPath(null)
+          setIsAndroidMounted(true)
       }
-    } catch { setCoreStatus('stopped') }
+      return data
+    } catch { 
+      setCoreStatus('stopped')
+      return { status: 'stopped' }
+    }
   }, [])
 
   const fetchLogs = useCallback(async () => {
@@ -85,6 +124,38 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
     }
   }, [])
 
+  // Detect path mismatch
+  const restartRequired = isConnected && coreStatus === 'running' && runningPath && runningPath !== basePath
+
+  const handleScanApps = useCallback(async (isDeep = false) => {
+    if (restartRequired) {
+        toast.error(t('dashboard.restart_required'))
+        return
+    }
+    if (coreStatus !== 'running') return
+    if (!isAndroidMounted) {
+        toast.error(t('dashboard.invalid_mount_msg'))
+        return
+    }
+    setAppsLoading(true)
+    try {
+      // Core is already running/connected, so just fetch apps with long timeout
+      // isDeep=true means we DON'T skip (skip_packages=false)
+      // isDeep=false means we DO skip (skip_packages=true)
+      const skip = isDeep === true ? 'false' : 'true'
+      const { data } = await apiClient.get(`/api/apps?skip_packages=${skip}`, { timeout: 350000 })
+      setApps(data.apps ?? {})
+      setCategoryRoots(data.category_roots ?? {})
+      setPackagesLoaded(isDeep)
+      const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+      setLastRefresh(time)
+      const total = Object.values(data.apps ?? {}).reduce((s, a) => s + a.length, 0)
+      toast.success(`${isDeep ? 'Deep' : 'Fast'} scan complete. Found ${total} apps`)
+    } catch (err) {
+      toast.error(`Scan failed: ${err.response?.data?.message ?? err.message}`)
+    } finally { setAppsLoading(false) }
+  }, [coreStatus, isAndroidMounted, restartRequired, t])
+
   // Initial fetch
   useEffect(() => { fetchStatus(); fetchLogs() }, [fetchStatus, fetchLogs])
 
@@ -92,8 +163,8 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   useEffect(() => {
     if (coreStatus === 'starting') {
       pollRef.current = setInterval(async () => {
-        const status = await fetchStatus()
-        if (status === 'running') {
+        const data = await fetchStatus()
+        if (data.status === 'running' && data.is_android_mounted !== false) {
             clearInterval(pollRef.current)
             toast.success('Core connected!')
             
@@ -106,14 +177,27 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
             
             // Fetch profiles
             fetchProfiles()
+
+            // Auto-scan once connected (only once)
+            if (!hasAutoScanned.current) {
+                hasAutoScanned.current = true
+                handleScanApps()
+            }
         }
       }, 2000)
-    } else if (coreStatus === 'running') {
+    } else if (coreStatus === 'running' && isAndroidMounted) {
         // Just in case we mounted while already running
         fetchProfiles()
+        
+        // Auto-scan if empty and haven't tried yet
+        const total = Object.values(apps).reduce((s, a) => s + a.length, 0)
+        if (total === 0 && !appsLoading && !hasAutoScanned.current) {
+            hasAutoScanned.current = true
+            handleScanApps()
+        }
     }
     return () => clearInterval(pollRef.current)
-  }, [coreStatus, fetchStatus, fetchLogs, fetchProfiles])
+  }, [coreStatus, isAndroidMounted, fetchStatus, fetchLogs, fetchProfiles, handleScanApps, apps, appsLoading])
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const toggleSelected = useCallback((id) => {
@@ -200,33 +284,59 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
     try {
       await CoreAPI.stop()
       toast.success('Core stopped.')
-      setCoreStatus('stopped'); setApps({}); setSelected(new Set())
+      setCoreStatus('stopped'); setApps({}); setSelected(new Set()); setLastRefresh(null)
       setRunningPath(null)
+      setPackagesLoaded(false)
+      hasAutoScanned.current = false
+      // Clear user-installed tracking on stop/disconnect
+      localStorage.removeItem('userInstalledApps')
+      sessionStorage.removeItem('cachedApps')
+      sessionStorage.removeItem('cachedCategoryRoots')
+      sessionStorage.removeItem('lastRefreshTime')
     } catch (err) {
       toast.error(`Failed to stop core: ${err.response?.data?.message ?? err.message}`)
     } finally { setActionLoading(false) }
   }
 
-  // Detect path mismatch
-  const restartRequired = isConnected && coreStatus === 'running' && runningPath && runningPath !== basePath
-
-  const handleScanApps = async () => {
-    if (restartRequired) {
-        toast.error(t('dashboard.restart_required'))
-        return
-    }
-    if (coreStatus !== 'running') return
-    setAppsLoading(true)
+  const handleRestart = async () => {
+    setActionLoading(true)
     try {
-      // Core is already running/connected, so just fetch apps
-      const { data } = await apiClient.get('/api/apps')
-      setApps(data.apps ?? {})
-      const total = Object.values(data.apps ?? {}).reduce((s, a) => s + a.length, 0)
-      toast.success(`Found ${total} apps`)
+      // 1. Kill PID (stop)
+      await CoreAPI.stop()
+      setCoreStatus('stopped'); setApps({}); setSelected(new Set()); setLastRefresh(null)
+      setRunningPath(null)
+      setPackagesLoaded(false)
+      hasAutoScanned.current = false
+      localStorage.removeItem('userInstalledApps')
+      sessionStorage.removeItem('cachedApps')
+      sessionStorage.removeItem('cachedCategoryRoots')
+      sessionStorage.removeItem('lastRefreshTime')
+      
+      // small delay to ensure cleanup
+      await new Promise(r => setTimeout(r, 1000))
+
+      // 2. Automatic start again
+      const { data } = await CoreAPI.start(basePath, emulatorType, versionId)
+      toast.success(`Core restarted (PID ${data.pid})`)
+      setCoreStatus('starting')
+      setRunningPath(basePath)
     } catch (err) {
-      toast.error(`Scan failed: ${err.response?.data?.message ?? err.message}`)
-    } finally { setAppsLoading(false) }
+      toast.error(`Failed to restart core: ${err.response?.data?.message ?? err.message}`)
+    } finally { setActionLoading(false) }
   }
+
+
+  const handleAppAdded = useCallback((newApp, category) => {
+    setApps(prev => {
+      const next = { ...prev }
+      if (!next[category]) next[category] = []
+      // Avoid duplicates
+      if (!next[category].find(a => a.path === newApp.path)) {
+        next[category] = [...next[category], newApp].sort((a, b) => a.name.localeCompare(b.name))
+      }
+      return next
+    })
+  }, [])
 
   const handleDelete = async () => {
     if (selected.size === 0) return
@@ -249,24 +359,26 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   }
 
   const isRunning = coreStatus === 'running'
+  const isOperational = isRunning && isAndroidMounted
   const busy = actionLoading || appsLoading
+  const totalApps = Object.values(apps).reduce((s, a) => s + a.length, 0)
 
   return (
-    <div className="h-[calc(100vh-4rem)] bg-[var(--bg-primary)] flex flex-col overflow-hidden">
+    <div className="min-h-[calc(100vh-4rem)] lg:h-[calc(100vh-4rem)] bg-[var(--bg-primary)] flex flex-col lg:overflow-hidden">
       {/* ── Header ── */}
       {/* Removed duplicate header */}
 
       {/* ── Body: responsive grid ── */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-6 lg:overflow-hidden overflow-y-auto">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-6 lg:overflow-hidden overflow-visible">
 
         {/* ── Control panel (left on desktop, top on mobile) ── */}
         <aside className="
-          lg:col-span-4
+          lg:col-span-3
           border-b lg:border-b-0 lg:border-r border-[var(--border)]
           bg-[var(--bg-secondary)]
           flex flex-col gap-4
           p-4 sm:p-5
-          overflow-y-auto
+          lg:overflow-y-auto
           h-auto lg:h-full
         ">
           {/* Core control */}
@@ -286,6 +398,12 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
                   </div>
               )}
 
+              {coreStatus === 'running' && !isAndroidMounted && (
+                  <div className="text-xs text-red-600 dark:text-red-400 font-bold mb-1 p-2 bg-red-500/10 rounded border border-red-500/20">
+                      ⚠️ {t('dashboard.invalid_mount_msg', 'Android files not found. Please check your path and restart core.')}
+                  </div>
+              )}
+
               <AnimatePresence mode="wait">
                 {coreStatus === 'stopped' ? (
                   <motion.button
@@ -301,15 +419,15 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
                   <motion.button
                     key="stop"
                     initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-                    onClick={handleStop}
+                    onClick={(restartRequired || !isAndroidMounted) ? handleRestart : handleStop}
                     disabled={busy}
                     className={`w-full py-3 rounded-md text-sm font-semibold transition-colors disabled:opacity-50 touch-manipulation ${
-                        restartRequired 
+                        (restartRequired || !isAndroidMounted) 
                         ? 'bg-amber-500 hover:bg-amber-600 text-white animate-pulse' 
                         : 'bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-100'
                     }`}
                   >
-                    {actionLoading ? t('dashboard.stopping') : (restartRequired ? `↻ ${t('dashboard.restart_core', 'Restart Core')}` : `■ ${t('dashboard.stop_core')}`)}
+                    {actionLoading ? ((restartRequired || !isAndroidMounted) ? t('dashboard.restarting', 'Restarting...') : t('dashboard.stopping')) : ( (restartRequired || !isAndroidMounted) ? `↻ ${t('dashboard.restart_core', 'Restart Core')}` : `■ ${t('dashboard.stop_core')}`)}
                   </motion.button>
                 )}
               </AnimatePresence>
@@ -324,18 +442,19 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
 
           {/* Scan */}
           <section>
+            {/* Fast Scan Button (Default) */}
             <button
-              onClick={handleScanApps}
-              disabled={!isRunning || busy}
+              onClick={() => handleScanApps(false)}
+              disabled={!isOperational || busy}
               className={`
-                w-full py-3 rounded-md text-sm font-semibold transition-all touch-manipulation
-                ${isRunning && !busy
-                  ? 'bg-[var(--bg-card)] border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)]'
+                w-full py-3 rounded-md text-sm font-semibold transition-all touch-manipulation mb-2
+                ${isOperational && !busy
+                  ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] shadow-sm'
                   : 'bg-[var(--bg-card)]/40 border border-[var(--border)]/40 text-[var(--text-muted)] cursor-not-allowed'
                 }
               `}
             >
-              {appsLoading ? (
+              {appsLoading && !packagesLoaded ? (
                 <span className="flex items-center justify-center gap-2">
                   <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -343,7 +462,44 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
                   </svg>
                   {t('dashboard.scanning')}
                 </span>
-              ) : `🔍 ${t('dashboard.scan_apps')}`}
+              ) : `⚡ ${t('dashboard.fast_scan')}`}
+            </button>
+
+            {/* Slow Scan Button (Deep) */}
+            <button
+              onClick={() => setConfirmDeepScan(true)}
+              disabled={!isOperational || busy}
+              className={`
+                w-full py-2.5 rounded-md text-xs font-semibold transition-all touch-manipulation
+                ${isOperational && !busy
+                  ? 'bg-[var(--bg-card)] border border-amber-500/50 hover:border-amber-500 text-amber-600 dark:text-amber-400'
+                  : 'bg-[var(--bg-card)]/40 border border-[var(--border)]/40 text-[var(--text-muted)] cursor-not-allowed'
+                }
+              `}
+            >
+              {appsLoading && packagesLoaded ? (
+                <span className="flex items-center justify-center gap-2">
+                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={4} />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  {t('dashboard.scanning')}
+                </span>
+              ) : `🔍 ${t('dashboard.slow_scan')}`}
+            </button>
+            
+            <button
+              onClick={() => setShowAddApp(true)}
+              disabled={!isOperational || busy}
+              className={`
+                w-full py-3 rounded-md text-sm font-semibold transition-all touch-manipulation mt-2
+                ${isOperational && !busy
+                  ? 'bg-[var(--bg-card)] border border-[var(--border)] hover:border-[var(--accent)] text-[var(--accent)]'
+                  : 'bg-[var(--bg-card)]/40 border border-[var(--border)]/40 text-[var(--text-muted)] cursor-not-allowed'
+                }
+              `}
+            >
+              ➕ {t('dashboard.add_app', 'Add a app')}
             </button>
           </section>
 
@@ -353,10 +509,10 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
             <div className="flex flex-col gap-2">
               <button
                 onClick={() => selected.size > 0 && setConfirmDelete(true)}
-                disabled={!isRunning || busy || selected.size === 0}
+                disabled={!isOperational || busy || selected.size === 0}
                 className={`
                   w-full flex items-center justify-center gap-2 py-3 rounded-md text-sm font-semibold transition-all touch-manipulation
-                  ${isRunning && selected.size > 0 && !busy
+                  ${isOperational && selected.size > 0 && !busy
                     ? 'bg-red-600 hover:bg-red-700 text-white'
                     : 'bg-red-500/10 text-red-400/50 cursor-not-allowed border border-red-500/20'
                   }
@@ -372,33 +528,40 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
         </aside>
 
         {/* ── Right panel (app list + log) ── */}
-        <div className="lg:col-span-8 flex flex-col overflow-hidden h-auto lg:h-full">
-          {/* App list */}
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        <div className="lg:col-span-9 flex flex-col min-h-0 lg:overflow-hidden overflow-visible">
+          {/* App list area */}
+          <div className="flex-1 flex flex-col p-4 sm:p-6 min-h-0 lg:overflow-hidden">
             {/* App List Header */}
-            <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center justify-between mb-4 shrink-0">
               <h2 className="text-sm font-semibold text-[var(--text-primary)]">{t('dashboard.installed_apps')}</h2>
               {isRunning && (
-                <button
-                  onClick={handleScanApps}
-                  disabled={appsLoading || busy}
-                  className="text-xs text-[var(--accent)] hover:opacity-80 transition-opacity disabled:opacity-40 touch-manipulation"
-                >
-                  ↺ {t('dashboard.refresh')}
-                </button>
+                <div className="flex items-center gap-4">
+                  {lastRefresh && (
+                    <span className="text-[10px] text-[var(--text-muted)] font-medium bg-[var(--bg-secondary)] px-2 py-1 rounded-md border border-[var(--border)]">
+                      {t('dashboard.last_refresh', 'Last refresh')}: {lastRefresh}
+                    </span>
+                  )}
+                </div>
               )}
             </div>
 
-            <div className="flex flex-1 min-h-0 gap-4">
-                {/* App List */}
-                <div className="flex-1 flex flex-col min-h-0">
-                    <AppList apps={apps} selected={selected} onToggle={toggleSelected} loading={appsLoading} />
+            <div className="flex-1 flex flex-col xl:flex-row gap-4 min-h-0 lg:overflow-hidden">
+                {/* App List - Independent Scroll */}
+                <div className="flex-1 lg:overflow-y-auto pr-1 custom-scrollbar">
+                    <AppList 
+                      apps={apps} 
+                      selected={selected} 
+                      onToggle={toggleSelected} 
+                      loading={appsLoading} 
+                      onRefresh={() => handleScanApps(false)}
+                      categoryRoots={categoryRoots}
+                    />
                 </div>
                 
-                {/* Profiles Sidebar (Only visible when running & profiles exist) */}
-                {isRunning && profiles.length > 0 && (
-                  <div className="w-64 border-l border-[var(--border)] pl-4 overflow-y-auto hidden md:block">
-                     <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">
+                {/* Profiles Sidebar - Independent Scroll */}
+                {isOperational && profiles.length > 0 && (
+                  <div className="w-full xl:w-64 border-t xl:border-t-0 xl:border-l border-[var(--border)] pt-4 xl:pt-0 xl:pl-4 lg:overflow-y-auto custom-scrollbar shrink-0">
+                     <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3 sticky top-0 bg-[var(--bg-primary)] py-1">
                        {t('dashboard.profiles', 'Debloat Profiles')}
                      </h2>
                      <div className="flex flex-col gap-3">
@@ -435,34 +598,38 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
       </main>
 
       {/* ── Confirm Delete Dialog ── */}
-      {confirmDelete && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="bg-[var(--bg-card)] border border-[var(--border)] rounded-xl p-5 sm:p-6 w-full max-w-sm shadow-2xl"
-          >
-            <h3 className="text-base font-bold text-[var(--text-primary)] mb-2">{t('dashboard.confirm_delete_title')}</h3>
-            <p className="text-sm text-[var(--text-muted)] mb-5">
-              {t('dashboard.confirm_delete_msg', { count: selected.size })}
-            </p>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setConfirmDelete(false)}
-                className="flex-1 py-2.5 rounded-md border border-[var(--border)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors touch-manipulation"
-              >
-                {t('dashboard.cancel')}
-              </button>
-              <button
-                onClick={handleDelete}
-                className="flex-1 py-2.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-semibold transition-colors touch-manipulation"
-              >
-                {t('dashboard.delete')}
-              </button>
-            </div>
-          </motion.div>
-        </div>
-      )}
+      <ConfirmDialog
+        isOpen={confirmDelete}
+        title={t('dashboard.confirm_delete_title')}
+        message={t('dashboard.confirm_delete_msg', { count: selected.size })}
+        confirmText={t('dashboard.delete')}
+        cancelText={t('dashboard.cancel')}
+        onConfirm={handleDelete}
+        onCancel={() => setConfirmDelete(false)}
+        type="danger"
+      />
+
+      {/* ── Confirm Deep Scan Dialog ── */}
+      <ConfirmDialog
+        isOpen={confirmDeepScan}
+        title={t('dashboard.confirm_slow_scan_title')}
+        message={t('dashboard.confirm_slow_scan_msg')}
+        confirmText={t('dashboard.slow_scan')}
+        cancelText={t('dashboard.cancel')}
+        onConfirm={() => {
+            setConfirmDeepScan(false)
+            handleScanApps(true)
+        }}
+        onCancel={() => setConfirmDeepScan(false)}
+        type="warning"
+      />
+      {/* ── Add App Modal ── */}
+      <AddAppModal 
+        isOpen={showAddApp} 
+        onClose={() => setShowAddApp(false)} 
+        onRefresh={handleAppAdded}
+        categoryRoots={categoryRoots}
+      />
     </div>
   )
 }

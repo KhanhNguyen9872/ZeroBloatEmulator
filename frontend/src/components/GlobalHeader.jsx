@@ -228,27 +228,25 @@ export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwi
     <header className="fixed top-0 inset-x-0 z-50 h-16 flex items-center justify-between px-4 sm:px-6 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
 
       {/* ── Left: Branding & Path ── */}
-      <div className="flex items-center gap-4 min-w-0">
-        <div className="flex items-center gap-2.5 shrink-0">
-          <img
-            src="/assets/logo.png"
-            alt="ZeroBloatEmulator Logo"
-            className="w-8 h-8 object-contain"
-          />
-          <span className="font-bold text-sm tracking-tight text-zinc-900 dark:text-zinc-100 hidden sm:block">
+      <div className="flex items-center gap-2.5 min-w-0">
+        <img
+          src="/assets/logo.png"
+          alt="ZeroBloatEmulator Logo"
+          className="w-10 h-10 object-contain shrink-0"
+        />
+        <div className="flex flex-col min-w-0">
+          <span className="font-bold text-sm leading-tight tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
             ZeroBloatEmulator
           </span>
+          {currentPath && (
+            <div className="flex items-center gap-1 min-w-0 mt-0.5">
+              <FolderIcon className="w-3 h-3 text-[var(--accent)] shrink-0" />
+              <span className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate font-medium" title={currentPath}>
+                {currentPath}
+              </span>
+            </div>
+          )}
         </div>
-
-        {/* Path Display */}
-        {currentPath && (
-          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 max-w-[300px] lg:max-w-[400px]">
-            <FolderIcon className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
-            <span className="text-xs text-zinc-600 dark:text-zinc-400 truncate" title={currentPath}>
-              {currentPath}
-            </span>
-          </div>
-        )}
       </div>
 
       {/* ── Right: Actions ── */}
@@ -258,23 +256,17 @@ export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwi
         {currentPath && onSwitchFolder && (
           <button
             onClick={onSwitchFolder}
-            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20"
             title="Switch Folder"
           >
             <EditIcon className="w-3.5 h-3.5" />
-            <span>Switch</span>
+            <span className="hidden xs:inline">Switch</span>
           </button>
         )}
 
         <div className="w-px h-4 bg-zinc-200 dark:bg-zinc-800 mx-1 hidden sm:block" />
 
-        {/* Admin badge */}
-        {isAdmin && (
-          <span className="hidden sm:flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-300 dark:border-amber-500/30">
-            <ShieldIcon className="w-3 h-3" />
-            {t('admin.badge_short')}
-          </span>
-        )}
+        <div className="w-px h-4 bg-zinc-200 dark:bg-zinc-800 mx-1 hidden sm:block" />
 
         {/* Theme toggle */}
         <button

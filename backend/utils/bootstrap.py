@@ -30,7 +30,7 @@ def verify_assets() -> bool:
     qemu_ok = os.path.isfile(QEMU_EXECUTABLE)
     img_ok = os.path.isfile(WORKER_IMAGE)
     if not qemu_ok:
-        logger.debug("Missing QEMU executable at: %s", QEMU_EXECUTABLE)
+        logger.debug("Missing Core executable at: %s", QEMU_EXECUTABLE)
     if not img_ok:
         logger.debug("Missing Worker image at: %s", WORKER_IMAGE)
     return qemu_ok and img_ok

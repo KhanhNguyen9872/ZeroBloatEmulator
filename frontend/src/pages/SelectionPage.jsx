@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import Select from 'react-select'
 import { getEmulatorConfig } from '../config/emulatorMap'
+import { useTranslation } from 'react-i18next'
 
 const selectStyles = {
   control: (base, state) => ({
@@ -42,24 +43,23 @@ const selectStyles = {
 
 // ── Unknown ──────────────────────────────────────────────────────────────────
 function UnknownCard({ onRetry }) {
+  const { t } = useTranslation()
   return (
     <div className="flex flex-col items-center gap-6 text-center">
       <div className="w-20 h-20 rounded-2xl bg-[var(--bg-secondary)] border border-[var(--border)] flex items-center justify-center text-4xl shadow-inner">
         ⚠️
       </div>
       <div>
-        <h2 className="text-xl font-bold text-[var(--text-primary)]">No Supported Emulator Found</h2>
-        <p className="text-sm text-[var(--text-muted)] mt-2 max-w-sm mx-auto leading-relaxed">
-          The selected folder doesn't appear to contain a supported emulator.
-          <br />
-          Please select the <strong>installation folder</strong> of LDPlayer or MEmu.
+        <h2 className="text-xl font-bold text-[var(--text-primary)]">{t('selection.no_emulator_title')}</h2>
+        <p className="text-sm text-[var(--text-muted)] mt-2 max-w-sm mx-auto leading-relaxed whitespace-pre-line">
+          {t('selection.no_emulator_msg')}
         </p>
       </div>
       <button
         onClick={onRetry}
         className="px-6 py-2.5 rounded-lg border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] hover:bg-[var(--bg-secondary)] transition-all touch-manipulation"
       >
-        ← Try Another Folder
+        {t('selection.try_another')}
       </button>
     </div>
   )
@@ -68,7 +68,7 @@ function UnknownCard({ onRetry }) {
 // ── Detected Card ─────────────────────────────────────────────────────────────
 function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRetry }) {
   // result = { type, status, detected_version, options, base_path }
-  
+  const { t } = useTranslation()
   const isAuto = result.status === 'auto'
   const isManual = result.status === 'manual_select'
   
@@ -110,12 +110,12 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
             <h2 className="text-lg font-bold text-[var(--text-primary)]">{cfg.name}</h2>
             {isAuto && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                Auto-Detected
+                {t('selection.auto_detected')}
               </span>
             )}
             {isManual && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/30">
-                Action Required
+                {t('selection.action_required')}
               </span>
             )}
           </div>
@@ -123,7 +123,7 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
           {isAuto ? (
              <p className="text-sm text-[var(--accent)] mt-1 font-semibold">{result.detected_version}</p>
           ) : (
-             <p className="text-xs text-[var(--text-muted)] mt-1">Please select version below</p>
+             <p className="text-xs text-[var(--text-muted)] mt-1">{t('selection.select_version_below')}</p>
           )}
 
           <p className="text-[10px] text-[var(--text-muted)] mt-1 truncate opacity-60 font-mono" title={result.base_path}>
@@ -143,13 +143,13 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
             className="flex flex-col gap-2 overflow-visible"
           >
             <label className="text-sm font-medium text-[var(--text-muted)]">
-              Select Android Version
+              {t('selection.select_version_label')}
             </label>
             <Select
               options={dropdownOptions}
               value={selectedVersion}
               onChange={onVersionChange}
-              placeholder="Choose a version..."
+              placeholder={t('selection.choose_version_placeholder')}
               styles={selectStyles}
               isSearchable={false}
               menuPlacement="auto"
@@ -178,7 +178,7 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
           }}
           className="px-5 py-2.5 rounded-lg border border-[var(--border)] text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] hover:bg-[var(--bg-secondary)] transition-all touch-manipulation"
         >
-          {cfg.common?.back || "Back"}
+          {t('common.back')}
         </button>
         <motion.button
           whileHover={canStart ? { scale: 1.02, filter: 'brightness(1.1)' } : {}}
@@ -193,7 +193,7 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
             }
           `}
         >
-          {isAuto ? 'Continue' : 'Confirm & Continue'}
+          {isAuto ? t('selection.continue') : t('selection.confirm_continue')}
         </motion.button>
       </div>
     </div>
@@ -202,6 +202,7 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
 
 // ── Main Page ─────────────────────────────────────────────────────────────────
 export default function SelectionPage({ result, onStart, onRetry }) {
+  const { t } = useTranslation()
   // Local state for the dropdown (only used if manual)
   const [selectedVersion, setSelectedVersion] = useState(null)
 
@@ -253,12 +254,12 @@ export default function SelectionPage({ result, onStart, onRetry }) {
           {/* Header */}
           <div className="text-center space-y-2">
             <h1 className="text-2xl sm:text-3xl font-bold text-[var(--text-primary)] tracking-tight">
-              {isUnknown ? 'Scan Result' : 'Emulator Detected'}
+              {isUnknown ? t('selection.result_title') : t('selection.detected_title')}
             </h1>
             <p className="text-sm text-[var(--text-muted)]">
               {isUnknown
-                ? 'Authentication failed. Please check your folder.'
-                : 'We found a supported emulator environment.'}
+                ? t('selection.auth_failed')
+                : t('selection.found_emulator')}
             </p>
           </div>
 

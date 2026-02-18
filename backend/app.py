@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Import config (ensure backend/config.py exists and has SECRET_KEY)
 import backend.config as config
 
-from backend.utils.logger import get_logger, read_log_tail
+from backend.utils.logger import get_logger, read_log_tail, clear_logs
 from backend.utils.admin import is_admin, restart_as_admin
 from backend.utils.shortcut import resolve_shortcut
 from backend.core.vm_manager import QemuManager
@@ -75,11 +75,14 @@ def api_profiles():
     android_version = None
     if qemu.is_running and ssh._client:
         try:
-             # ro.build.version.release might return "7.1.2", "9", etc.
-             out = ssh.execute_command("getprop ro.build.version.release")
+             # Search for build.prop in common locations
+             # Then grep for ro.build.version.release=
+             cmd = f"grep '^ro.build.version.release=' {config.MOUNT_POINT}/system/build.prop {config.MOUNT_POINT}/build.prop 2>/dev/null | head -n 1 | cut -d= -f2"
+             out = ssh.execute_command(cmd)
              if out:
                  android_version = out.strip()
-        except:
+        except Exception as e:
+            logger.debug(f"[CORE] Failed to read build.prop: {e}")
             pass
 
     profiles = strategy.get_profiles(android_version=android_version)
@@ -102,6 +105,143 @@ def api_profile_packages(profile_id):
         
     packages = strategy.get_profile_packages(profile_id)
     return jsonify({"status": "ok", "profile_id": profile_id, "packages": packages})
+
+
+@app.route("/api/apps/targets", methods=["GET"])
+def api_app_targets():
+    """
+    Returns a list of available system directories where apps can be installed.
+    Only returns directories that actually exist on the target mount.
+    """
+    if not qemu.is_running or not ssh._client:
+        return _error("Core not running or connected.", 400)
+
+    # Base targets that are almost always there
+    candidates = [
+        {"id": "app", "path": "/system/app", "label": "app (default)"},
+        {"id": "priv-app", "path": "/system/priv-app", "label": "priv-app"},
+        {"id": "vendor/app", "path": "/vendor/app", "label": "vendor/app"},
+        {"id": "vendor/priv-app", "path": "/vendor/priv-app", "label": "vendor/priv-app"},
+        {"id": "product/app", "path": "/product/app", "label": "product/app"},
+        {"id": "product/priv-app", "path": "/product/priv-app", "label": "product/priv-app"},
+    ]
+
+    valid = []
+    for c in candidates:
+        full_path = f"{config.MOUNT_POINT}{c['path']}"
+        check = ssh.execute_command(f"[ -d {full_path} ] && echo YES || echo NO")
+        if check.strip() == "YES":
+            valid.append(c)
+    
+    return jsonify({"status": "ok", "targets": valid})
+
+
+@app.route("/api/apps/upload", methods=["POST"])
+@csrf.exempt # Exempting for simplicity with multi-part, consider token if needed
+def api_app_upload():
+    """
+    Body: Multipart file 'apk' + string field 'target_path' (e.g. /system/app)
+    """
+    if not qemu.is_running or not ssh._client:
+        return _error("Core not running or connected.", 400)
+
+    if 'apk' not in request.files:
+        return _error("No APK file uploaded.", 400)
+    
+    apk_file = request.files['apk']
+    target_path = request.form.get('target_path', '/system/app')
+
+    if not apk_file.filename.endswith('.apk'):
+        return _error("Invalid file type. Only .apk allowed.", 400)
+
+    import tempfile
+    import re
+    import unicodedata
+    import gc
+    import warnings
+    from pyaxmlparser import APK
+
+    # Suppress pyaxmlparser noise
+    warnings.filterwarnings("ignore", category=UserWarning, module="pyaxmlparser")
+
+    def sanitize_name(name: str) -> str:
+        # Remove extension
+        name = os.path.splitext(name)[0]
+        # Normalize unicode (remove accents/marks)
+        name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode('ascii')
+        # Remove non-alphanumeric (keep only letters, numbers, underscores, dots)
+        name = re.sub(r'[^a-zA-Z0-9._]', '', name)
+        # Trim and ensure not empty
+        name = name.strip() or "unnamed_app"
+        return name
+
+    def get_pkg_name(path):
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning, module="pyaxmlparser")
+                apk = APK(path)
+                return apk.package
+        except:
+            return None
+
+    tmp_path = tempfile.mktemp(suffix=".apk")
+    apk_file.save(tmp_path)
+
+    try:
+        pkg_name = get_pkg_name(tmp_path)
+        
+        if not pkg_name:
+            pkg_name = sanitize_name(apk_file.filename)
+
+        # Target full path on VM: /mnt/android/system/app/com.example.app/base.apk
+        remote_dir = f"{config.MOUNT_POINT}{target_path}/{pkg_name}"
+        remote_apk = f"{remote_dir}/base.apk"
+
+        # Ensure write access
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+
+        # Create dir
+        ssh.execute_command(f"mkdir -p {remote_dir}")
+        
+        logger.info(f"[CORE] Uploading APK: {pkg_name}")
+        # Upload
+        ssh.upload_file(tmp_path, remote_apk)
+        
+        # Set permissions (standard for system apps)
+        ssh.execute_command(f"chmod 755 {remote_dir}")
+        ssh.execute_command(f"chmod 644 {remote_apk}")
+
+        logger.info(f"[CORE] APK {pkg_name} installed successfully")
+
+        # Determine category for frontend optimistic update
+        # target_path is like /system/app or /vendor/app
+        category = "app"
+        if "priv-app" in target_path:
+            category = "priv-app"
+            if "vendor" in target_path: category = "vendor-priv-app"
+            elif "product" in target_path: category = "product-priv-app"
+        elif "vendor" in target_path: category = "vendor-app"
+        elif "product" in target_path: category = "product-app"
+
+        new_app = {
+            "name": pkg_name,
+            "path": f"{target_path}/{pkg_name}",
+            "package": pkg_name,
+            "category": category
+        }
+
+        return jsonify({"status": "ok", "app": new_app, "category": category})
+
+    except Exception as e:
+        return _error(f"Upload failed: {e}")
+    finally:
+        # Force garbage collection to release file handles before removal on Windows
+        gc.collect()
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception as e:
+                logger.warning(f"Could not remove temp file {tmp_path}: {e}")
 
 # ---------------------------------------------------------------------------
 # Singletons
@@ -200,14 +340,10 @@ def api_core_start():
     if not os.path.isfile(image_path):
         return _error(f"Image file not found: {image_path}", 400)
 
-    # Stop any previous session first
+    # If core is already started, no need to start next
     if qemu.is_running:
-        logger.info("Stopping previous VM before starting a new one…")
-        try:
-            ssh.close()
-        except Exception:
-            pass
-        qemu.stop_service()
+        logger.info("[CORE] core already running (PID %d). Returning existing session.", qemu.pid)
+        return jsonify({"status": "ok", "pid": qemu.pid})
 
     try:
         pid = qemu.start_service(target_path=image_path)
@@ -253,7 +389,7 @@ def api_core_status():
                 if ssh._client is None:
                     ssh.connect()
                     ssh.mount_target()
-                    logger.info("[CORE] Persistent SSH connection established and disk mounted.")
+                    logger.info("[CORE] Core connection established and disk mounted.")
             except Exception as exc:
                 # Fallback to health check to see if it's at least booting
                 logger.debug("[CORE] status check connection failed: %s", exc)
@@ -264,7 +400,11 @@ def api_core_status():
             return jsonify({"status": "starting", "pid": pid})
 
     if ssh._client is not None:
-        return jsonify({"status": "running", "pid": pid})
+        return jsonify({
+            "status": "running", 
+            "pid": pid,
+            "is_android_mounted": ssh.is_android_mounted
+        })
 
     # If no persistent connection, check if it's reachable at all
     healthy = ssh.check_health()
@@ -286,6 +426,15 @@ def api_logs():
     n = request.args.get("n", 50, type=int)
     lines = read_log_tail(n)
     return jsonify({"status": "ok", "logs": lines})
+
+
+@app.route("/api/logs/clear", methods=["POST"])
+def api_logs_clear():
+    """Clear the backend log file."""
+    if clear_logs():
+        return jsonify({"status": "ok", "message": "Log cleared."})
+    else:
+        return _error("Failed to clear log file.", 500)
 
 
 # ===========================================================================
@@ -352,10 +501,7 @@ def api_folders():
     return jsonify({"status": "ok", "path": path, "folders": folders, "entries": entries})
 
 
-@app.route("/api/system/admin-status", methods=["GET"])
-def api_admin_status():
-    """Return whether the backend process is running as Administrator."""
-    return jsonify({"is_admin": is_admin()})
+
 
 
 @app.route("/api/system/desktop", methods=["GET"])
@@ -458,7 +604,7 @@ def api_connect():
     try:
         pid = qemu.start_service(target_path=filepath)
     except Exception as exc:
-        return _error(f"Failed to start QEMU: {exc}")
+        return _error(f"Failed to start Core: {exc}")
 
     try:
         ssh.wait_for_connection(timeout=60)
@@ -507,10 +653,62 @@ def api_apps():
              return _error(f"Failed to connect/mount: {exc}")
 
     try:
-        bloatware = ssh.list_bloatware()
+        skip = request.args.get("skip_packages", "false").lower() == "true"
+        bloatware_data = ssh.list_bloatware(skip_packages=skip)
     except Exception as exc:
         return _error(f"Failed to list apps: {exc}")
-    return jsonify({"status": "ok", "apps": bloatware})
+    
+    return jsonify({
+        "status": "ok", 
+        "apps": bloatware_data["apps"],
+        "category_roots": bloatware_data["category_roots"]
+    })
+
+
+@app.route("/api/apps/rename", methods=["POST"])
+def api_apps_rename():
+    if not qemu.is_running:
+        return _error("No VM is running. Call /api/connect first.", 400)
+    data = request.get_json(silent=True) or {}
+    old_path = data.get("path")
+    new_name = data.get("new_name")
+    
+    if not old_path or not new_name:
+        return _error("Missing 'path' or 'new_name' in request body.", 400)
+    
+    try:
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        new_relative_path = ssh.rename_path(old_path, new_name)
+        return jsonify({
+            "status": "ok", 
+            "message": "Renamed successfully.",
+            "new_path": new_relative_path
+        })
+    except Exception as exc:
+        return _error(f"Rename failed: {exc}", 500)
+
+
+@app.route("/api/apps/move", methods=["POST"])
+def api_apps_move():
+    if not qemu.is_running:
+        return _error("No VM is running. Call /api/connect first.", 400)
+    data = request.get_json(silent=True) or {}
+    old_path = data.get("path")
+    new_category_root = data.get("new_category_root")
+    
+    if not old_path or not new_category_root:
+        return _error("Missing 'path' or 'new_category_root' in request body.", 400)
+    
+    try:
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        new_relative_path = ssh.move_path(old_path, new_category_root)
+        return jsonify({
+            "status": "ok", 
+            "message": "Moved successfully.",
+            "new_path": new_relative_path
+        })
+    except Exception as exc:
+        return _error(f"Move failed: {exc}", 500)
 
 
 @app.route("/api/delete", methods=["POST"])
@@ -533,7 +731,8 @@ def api_delete():
             try:
                 out = ssh.execute_command(f"rm -rf {p!r} 2>&1")
                 results[p] = out or "deleted"
-                logger.info("Deleted: %s", p)
+                display_path = p.replace("/mnt/android", "")
+                logger.info("[DEBLOAT] Deleted: %s", display_path)
             except Exception as exc:
                 errors[p] = str(exc)
                 logger.error("Failed to delete %s: %s", p, exc)
@@ -573,11 +772,13 @@ def api_disconnect():
 
 
 if __name__ == "__main__":
-    # Ensure assets (QEMU, Worker) are present
+    # Ensure assets (Core, Worker) are present
     bootstrap.initialize()
 
-    # Attempt to recover legacy session
-    qemu.reconnect_session(ssh)
+    # Attempt to recover legacy session in background
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not app.debug:
+        import threading
+        threading.Thread(target=qemu.reconnect_session, args=(ssh,), daemon=True).start()
 
     logger.info("ZeroBloatEmulator backend starting on http://0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000, debug=True)

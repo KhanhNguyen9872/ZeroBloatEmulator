@@ -54,16 +54,6 @@ export default function IntroPage({ onSelectFolder }) {
             <span className="text-[var(--accent)] font-medium">KhanhNguyen9872</span>
           </p>
 
-          {isAdmin && (
-            <span className="inline-flex items-center gap-1.5 mt-1 px-2.5 py-1 rounded-md text-xs font-medium
-              text-amber-700 dark:text-amber-400
-              border border-amber-300 dark:border-amber-500/40
-              bg-amber-50 dark:bg-amber-500/10"
-            >
-              <ShieldIcon className="w-3.5 h-3.5" />
-              {t('admin.badge')}
-            </span>
-          )}
         </motion.div>
 
         {/* Feature tags */}

@@ -44,11 +44,15 @@ def _configure():
         backupCount=3,
         encoding="utf-8",
     )
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(fmt)
 
     root.addHandler(stdout_handler)
     root.addHandler(file_handler)
+
+    # ── Silence verbose third-party loggers ──────────────────────────────
+    logging.getLogger("paramiko").setLevel(logging.WARNING)
+    logging.getLogger("paramiko.transport").setLevel(logging.CRITICAL)
 
     _configured = True
 
@@ -69,7 +73,7 @@ def read_log_tail(n: int = 50) -> list[str]:
     # Keywords to INCLUDE
     whitelist = ["[CORE]", "[DEBLOAT]", "[ERROR]", "Error", "Exception", "Traceback"]
     # Keywords to EXCLUDE (even if whitelist matches, though unlikely for overlap)
-    blacklist = ["/api/", "GET /", "POST /", "OPTIONS /", "werkzeug"]
+    blacklist = ["/api/", "GET /", "POST /", "OPTIONS /", "werkzeug", "[DEBUG]"]
 
     filtered_lines = []
     try:
@@ -93,3 +97,15 @@ def read_log_tail(n: int = 50) -> list[str]:
         return filtered_lines[-n:]
     except OSError:
         return []
+
+
+def clear_logs():
+    """Truncate the log file to zero bytes."""
+    if os.path.isfile(_LOG_FILE):
+        try:
+            with open(_LOG_FILE, "w", encoding="utf-8") as f:
+                f.truncate(0)
+            return True
+        except OSError:
+            return False
+    return True
