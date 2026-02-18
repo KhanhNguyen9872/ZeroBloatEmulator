@@ -66,8 +66,9 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
 
   useEffect(() => {
     fetchStatus(); fetchLogs()
-    pollRef.current = setInterval(() => { fetchStatus(); fetchLogs() }, 2000)
-    return () => clearInterval(pollRef.current)
+    // User requested to disable auto-polling to reduce log spam
+    // pollRef.current = setInterval(() => { fetchStatus(); fetchLogs() }, 2000)
+    // return () => clearInterval(pollRef.current)
   }, [fetchStatus, fetchLogs])
 
   // Auto-scan when core becomes running

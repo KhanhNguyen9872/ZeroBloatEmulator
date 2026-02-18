@@ -102,8 +102,11 @@ class SSHWorker:
             _, stdout, _ = probe.exec_command(f"echo '{_HEALTH_SENTINEL}'", timeout=3)
             output = stdout.read().decode(errors="replace").strip()
             return output == _HEALTH_SENTINEL
-        except Exception as exc:
-            logger.debug("Health check failed: %s", exc)
+            output = stdout.read().decode(errors="replace").strip()
+            return output == _HEALTH_SENTINEL
+        except (OSError, Exception) as exc:
+            # WinError 10038 can happen if socket is closed unexpectedly during handshake
+            logger.debug("Health check failed (likely booting): %s", exc)
             return False
         finally:
             if probe is not None:
