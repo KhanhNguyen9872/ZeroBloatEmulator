@@ -44,16 +44,22 @@ export function BackendProvider({ children }) {
 
   // Start polling on mount
   useEffect(() => {
-    // 1. Fetch CSRF Token
-    SecurityAPI.getCsrfToken()
-      .then(({ data }) => localStorage.setItem('csrf_token', data.csrf_token))
-      .catch(() => console.error("Failed to fetch CSRF token"))
-
-    // 2. Start Health Check
+    // 1. Initial Health Check
     checkHealth()
     intervalRef.current = setInterval(() => checkHealth(), POLL_INTERVAL)
     return () => clearInterval(intervalRef.current)
   }, [checkHealth])
+
+  // Refresh CSRF token whenever we connect/reconnect
+  useEffect(() => {
+    if (isConnected) {
+      SecurityAPI.getCsrfToken()
+        .then(({ data }) => {
+          localStorage.setItem('csrf_token', data.csrf_token)
+        })
+        .catch((err) => console.error("Failed to refresh CSRF token", err))
+    }
+  }, [isConnected])
 
   return (
     <BackendContext.Provider value={{ isConnected, isReconnecting, isAdmin, reconnect }}>
