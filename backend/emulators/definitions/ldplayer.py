@@ -36,3 +36,8 @@ class LDPlayerStrategy(BaseEmulator):
             ],
             "base_path": path
         }
+
+    def get_disk_path(self, base_path: str, version_id: str | None) -> str:
+        import os
+        # LDPlayer uses a single shared system.vmdk in the installation root
+        return os.path.join(base_path, "system.vmdk")

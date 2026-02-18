@@ -114,16 +114,34 @@ def api_health():
 @app.route("/api/core/start", methods=["POST"])
 def api_core_start():
     """
-    Body: { "image_path": "C:/path/to/system.img" }
+    Body: { 
+      "base_path": "D:/LDPlayer",
+      "emulator_type": "LDPLAYER",
+      "version_id": "ld9" 
+    }
     Spawns QEMU and returns the PID immediately (does NOT wait for SSH).
     """
+    from backend.emulators.loader import get_strategy
+
     data = request.get_json(silent=True) or {}
-    image_path = data.get("image_path")
+    base_path = data.get("base_path")
+    emu_type = data.get("emulator_type")
+    version_id = data.get("version_id")
 
-    if not image_path:
-        return _error("Missing 'image_path' in request body.", 400)
+    if not base_path or not emu_type:
+        return _error("Missing 'base_path' or 'emulator_type' in request body.", 400)
 
-    image_path = os.path.normpath(image_path)
+    # 1. Resolve strategy
+    strategy = get_strategy(emu_type)
+    if not strategy:
+        return _error(f"Unknown emulator type: {emu_type}", 400)
+
+    # 2. Resolve disk path
+    try:
+        image_path = strategy.get_disk_path(base_path, version_id)
+        logger.info("[CORE] Resolved disk path: %s", image_path)
+    except Exception as exc:
+        return _error(f"Failed to resolve disk path: {exc}")
 
     if not os.path.isfile(image_path):
         return _error(f"Image file not found: {image_path}", 400)

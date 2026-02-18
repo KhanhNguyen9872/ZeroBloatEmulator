@@ -59,8 +59,12 @@ export const SystemAPI = {
 // ── Core (QEMU VM) ────────────────────────────────────────────────────────────
 export const CoreAPI = {
   /** Start the QEMU VM with the given disk image path. */
-  start: (imagePath) =>
-    apiClient.post('/api/core/start', { image_path: imagePath }),
+  start: (basePath, emulatorType, versionId) =>
+    apiClient.post('/api/core/start', { 
+      base_path: basePath, 
+      emulator_type: emulatorType, 
+      version_id: versionId 
+    }),
 
   /** Stop the running QEMU VM. */
   stop: () =>

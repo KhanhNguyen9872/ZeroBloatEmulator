@@ -37,7 +37,7 @@ function ShieldIcon({ className }) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-export default function DashboardPage({ diskPath, onDisconnect }) {
+export default function DashboardPage({ basePath, emulatorType, versionId, onDisconnect }) {
   const { t } = useTranslation()
   const { isConnected, isAdmin } = useBackend()
   const [coreStatus, setCoreStatus] = useState('stopped')
@@ -90,7 +90,7 @@ export default function DashboardPage({ diskPath, onDisconnect }) {
     if (!isConnected) return
     setActionLoading(true)
     try {
-      const { data } = await CoreAPI.start(diskPath)
+      const { data } = await CoreAPI.start(basePath, emulatorType, versionId)
       toast.success(`Core started (PID ${data.pid})`)
       setCoreStatus('starting')
     } catch (err) {
@@ -153,12 +153,12 @@ export default function DashboardPage({ diskPath, onDisconnect }) {
   const busy = actionLoading || appsLoading
 
   return (
-    <div className="min-h-screen bg-[var(--bg-primary)] flex flex-col">
+    <div className="h-[calc(100vh-4rem)] bg-[var(--bg-primary)] flex flex-col overflow-hidden">
       {/* ── Header ── */}
       {/* Removed duplicate header */}
 
       {/* ── Body: responsive grid ── */}
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-6 overflow-hidden">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-6 lg:overflow-hidden overflow-y-auto">
 
         {/* ── Control panel (left on desktop, top on mobile) ── */}
         <aside className="
@@ -168,7 +168,7 @@ export default function DashboardPage({ diskPath, onDisconnect }) {
           flex flex-col gap-4
           p-4 sm:p-5
           overflow-y-auto
-          lg:max-h-[calc(100vh-57px)]
+          h-auto lg:h-full
         ">
           {/* Core control */}
           <section>
@@ -270,7 +270,7 @@ export default function DashboardPage({ diskPath, onDisconnect }) {
         </aside>
 
         {/* ── Right panel (app list + log) ── */}
-        <div className="lg:col-span-8 flex flex-col overflow-hidden">
+        <div className="lg:col-span-8 flex flex-col overflow-hidden h-auto lg:h-full">
           {/* App list */}
           <div className="flex-1 overflow-y-auto p-4 sm:p-6">
             <div className="flex items-center justify-between mb-4">

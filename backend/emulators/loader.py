@@ -77,3 +77,14 @@ def detect_emulator(path: str) -> dict:
 
     logger.info("No emulator detected at: %s", path)
     return {"type": "Unknown"}
+
+
+def get_strategy(identifier: str) -> BaseEmulator | None:
+    """Return the strategy instance matching the given identifier (case-insensitive)."""
+    if not identifier:
+        return None
+    target = identifier.upper()
+    for strategy in _STRATEGIES:
+        if strategy.identifier().upper() == target:
+            return strategy
+    return None

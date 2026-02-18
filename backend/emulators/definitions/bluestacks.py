@@ -65,3 +65,16 @@ class BlueStacksStrategy(BaseEmulator):
             ],
             "base_path": path
         }
+
+    def get_disk_path(self, base_path: str, version_id: str | None) -> str:
+        import os
+        # version_id might be "bs4", "bs5" or the actual folder name if we improve detection later.
+        # For now, stick to standard BS5 structure fallback.
+        # Structure: Engine/Nougat32/Root.vhd
+        
+        # If version_id is a known folder name, use it
+        if version_id and os.path.isdir(os.path.join(base_path, "Engine", version_id)):
+             return os.path.join(base_path, "Engine", version_id, "Root.vhd")
+        
+        # Fallback to standard Nougat32
+        return os.path.join(base_path, "Engine", "Nougat32", "Root.vhd")

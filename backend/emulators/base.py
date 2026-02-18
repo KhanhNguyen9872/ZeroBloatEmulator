@@ -28,6 +28,17 @@ class BaseEmulator(ABC):
             { "type": "MEmu",     "versions": [...], "selected": "...", "status": "auto_selected" }
         """
 
+    @abstractmethod
+    def get_disk_path(self, base_path: str, version_id: str | None) -> str:
+        """
+        Return the absolute path to the disk image (e.g. system.vmdk or system.img).
+        
+        Args:
+            base_path: The root folder of the emulator (e.g. "D:/LDPlayer").
+            version_id: The selected version ID (e.g. "96", "ld9", "bs5").
+                        May be None if the strategy only detected one version.
+        """
+
     # ── Shared utilities ──────────────────────────────────────────────────────
 
     @staticmethod

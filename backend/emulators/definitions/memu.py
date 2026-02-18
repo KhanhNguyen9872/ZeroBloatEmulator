@@ -73,3 +73,8 @@ class MemuStrategy(BaseEmulator):
             "options": detected_versions,
             "base_path": path
         }
+    
+    def get_disk_path(self, base_path: str, version_id: str | None) -> str:
+        # Defaults to '96' (Android 9 64-bit) if not specified
+        ver = version_id if version_id in _IMAGE_MAP else "96"
+        return os.path.join(base_path, "image", ver, "system.img")
