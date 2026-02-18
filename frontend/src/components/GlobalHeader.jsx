@@ -201,27 +201,72 @@ function ServiceStatus({ isConnected, isReconnecting, onReconnect }) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-export default function GlobalHeader({ isDark, onToggleTheme }) {
+function FolderIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round" 
+        d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z" />
+    </svg>
+  )
+}
+
+function EditIcon({ className }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <path strokeLinecap="round" strokeLinejoin="round"
+        d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+    </svg>
+  )
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwitchFolder }) {
   const { t } = useTranslation()
   const { isConnected, isReconnecting, isAdmin, reconnect } = useBackend()
 
   return (
     <header className="fixed top-0 inset-x-0 z-50 h-16 flex items-center justify-between px-4 sm:px-6 bg-white/80 dark:bg-zinc-950/80 backdrop-blur-md border-b border-zinc-200 dark:border-zinc-800">
 
-      {/* ── Left: Branding ── */}
-      <div className="flex items-center gap-2.5">
-        <img
-          src="/assets/logo.png"
-          alt="ZeroBloatEmulator Logo"
-          className="w-8 h-8 object-contain shrink-0"
-        />
-        <span className="font-bold text-sm tracking-tight text-zinc-900 dark:text-zinc-100 hidden sm:block">
-          ZeroBloatEmulator
-        </span>
+      {/* ── Left: Branding & Path ── */}
+      <div className="flex items-center gap-4 min-w-0">
+        <div className="flex items-center gap-2.5 shrink-0">
+          <img
+            src="/assets/logo.png"
+            alt="ZeroBloatEmulator Logo"
+            className="w-8 h-8 object-contain"
+          />
+          <span className="font-bold text-sm tracking-tight text-zinc-900 dark:text-zinc-100 hidden sm:block">
+            ZeroBloatEmulator
+          </span>
+        </div>
+
+        {/* Path Display */}
+        {currentPath && (
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full bg-zinc-100 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-700 max-w-[300px] lg:max-w-[400px]">
+            <FolderIcon className="w-3.5 h-3.5 text-zinc-400 shrink-0" />
+            <span className="text-xs text-zinc-600 dark:text-zinc-400 truncate" title={currentPath}>
+              {currentPath}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* ── Right: Actions ── */}
       <div className="flex items-center gap-2">
+
+        {/* Switch Folder Button */}
+        {currentPath && onSwitchFolder && (
+          <button
+            onClick={onSwitchFolder}
+            className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium text-zinc-600 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"
+            title="Switch Folder"
+          >
+            <EditIcon className="w-3.5 h-3.5" />
+            <span>Switch</span>
+          </button>
+        )}
+
+        <div className="w-px h-4 bg-zinc-200 dark:bg-zinc-800 mx-1 hidden sm:block" />
 
         {/* Admin badge */}
         {isAdmin && (

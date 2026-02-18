@@ -61,14 +61,35 @@ def get_logger(name: str) -> logging.Logger:
 
 def read_log_tail(n: int = 50) -> list[str]:
     """
-    Read the last *n* lines from the log file.
-    Returns an empty list if the file does not exist yet.
+    Read the last lines from the log file, filtering for relevant Core/Debloat events.
     """
     if not os.path.isfile(_LOG_FILE):
         return []
+
+    # Keywords to INCLUDE
+    whitelist = ["[CORE]", "[DEBLOAT]", "[ERROR]", "Error", "Exception", "Traceback"]
+    # Keywords to EXCLUDE (even if whitelist matches, though unlikely for overlap)
+    blacklist = ["/api/", "GET /", "POST /", "OPTIONS /", "werkzeug"]
+
+    filtered_lines = []
     try:
         with open(_LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-        return [line.rstrip("\n") for line in lines[-n:]]
+            # Read all lines first (or seek to end for efficiency if file is huge, 
+            # but for <5MB logs, reading all is fine)
+            for line in f:
+                line = line.rstrip("\n")
+                if not line:
+                    continue
+                
+                # Check blacklist first
+                if any(keyword in line for keyword in blacklist):
+                    continue
+                
+                # Check whitelist
+                if any(keyword in line for keyword in whitelist):
+                    filtered_lines.append(line)
+        
+        # Return only the last n filtered lines
+        return filtered_lines[-n:]
     except OSError:
         return []

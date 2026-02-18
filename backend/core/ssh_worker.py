@@ -38,7 +38,7 @@ class SSHWorker:
             allow_agent=False,
         )
         self._client = client
-        logger.info("SSH connected to %s:%d", cfg.SSH_HOST, cfg.SSH_PORT)
+        logger.info("[CORE] SSH connected to %s:%d", cfg.SSH_HOST, cfg.SSH_PORT)
 
     def wait_for_connection(self, timeout: int = 30) -> None:
         """Poll until SSH is reachable or *timeout* seconds elapse."""
@@ -59,7 +59,7 @@ class SSHWorker:
 
             try:
                 self.connect()
-                logger.info("SSH ready after %d attempt(s).", attempt)
+                logger.info("[CORE] SSH ready after %d attempt(s).", attempt)
                 return
             except (paramiko.AuthenticationException, paramiko.SSHException, OSError) as exc:
                 logger.debug("SSH not ready yet: %s", exc)
@@ -71,7 +71,7 @@ class SSHWorker:
         if self._client is not None:
             self._client.close()
             self._client = None
-            logger.info("SSH connection closed.")
+            logger.info("[CORE] SSH connection closed.")
 
     # ── Health check ──────────────────────────────────────────────────────
 
@@ -137,9 +137,9 @@ class SSHWorker:
             self.execute_command(f"mount -o ro {device} {cfg.MOUNT_POINT} 2>&1")
             check = self.execute_command(f"mountpoint -q {cfg.MOUNT_POINT} && echo OK || echo FAIL")
             if check.strip() == "OK":
-                logger.info("Mounted %s at %s", device, cfg.MOUNT_POINT)
+                logger.info("[CORE] Mounted %s at %s", device, cfg.MOUNT_POINT)
                 return device
-            logger.debug("Could not mount %s", device)
+            logger.debug("[CORE] Could not mount %s", device)
 
         raise RuntimeError(
             f"Failed to mount any of {cfg.DRIVE1_CANDIDATES} at {cfg.MOUNT_POINT}."
@@ -155,5 +155,5 @@ class SSHWorker:
             raw = self.execute_command(f"ls -F {path}")
             folders = [e.rstrip("/") for e in raw.splitlines() if e.endswith("/")]
             result[subdir] = folders
-            logger.info("Found %d entries in %s", len(folders), path)
+            logger.info("[DEBLOAT] Found %d entries in %s", len(folders), path)
         return result

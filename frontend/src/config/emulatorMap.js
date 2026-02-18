@@ -6,36 +6,33 @@
  */
 
 export const EMULATOR_MAP = {
-  LDPlayer: {
+  LDPLAYER: {
     name: 'LDPlayer',
-    emoji: '🎮',
-    color: 'text-yellow-500',
-    bg: 'bg-yellow-500/10',
-    border: 'border-yellow-500/20',
+    logo: '/assets/ldplayer.jpg',
     docs: 'https://www.ldplayer.net',
   },
-  MEmu: {
+  MEMU: {
     name: 'MEmu Play',
-    emoji: '📱',
-    color: 'text-purple-500',
-    bg: 'bg-purple-500/10',
-    border: 'border-purple-500/20',
+    logo: '/assets/memu.png',
     docs: 'https://www.memuplay.com',
   },
-  BlueStacks: {
-    name: 'BlueStacks',
-    emoji: '🔵',
-    color: 'text-blue-500',
-    bg: 'bg-blue-500/10',
-    border: 'border-blue-500/20',
-    docs: 'https://www.bluestacks.com',
+  BLUESTACKS4: {
+    name: 'BlueStacks 4',
+    logo: '/assets/bluestacks4.jpg',
+    color: 'text-blue-600',
+    bg: 'bg-blue-600/10',
+    docs: 'https://support.bluestacks.com/hc/en-us/articles/360056129211',
   },
-  Unknown: {
+  BLUESTACKS5: {
+    name: 'BlueStacks 5',
+    logo: '/assets/bluestacks5.png',
+    color: 'text-blue-400',
+    bg: 'bg-blue-400/10',
+    docs: 'https://support.bluestacks.com/hc/en-us/articles/360056960211',
+  },
+  UNKNOWN: {
     name: 'Unknown Emulator',
-    emoji: '❓',
-    color: 'text-zinc-500',
-    bg: 'bg-zinc-500/10',
-    border: 'border-zinc-500/20',
+    logo: null,
     docs: null,
   },
 }
@@ -44,9 +41,10 @@ export const EMULATOR_MAP = {
  * Look up emulator config by type string.
  * Falls back to Unknown if the type is not registered.
  *
- * @param {string} type - e.g. "LDPlayer", "MEmu", "BlueStacks"
- * @returns {{ name, emoji, color, bg, border, docs }}
+ * @param {string} type - e.g. "LDPLAYER", "MEMU"
+ * @returns {{ name, logo: string|null, docs: string|null }}
  */
 export function getEmulatorConfig(type) {
-  return EMULATOR_MAP[type] ?? EMULATOR_MAP.Unknown
+  const key = (type || 'UNKNOWN').toUpperCase()
+  return EMULATOR_MAP[key] ?? EMULATOR_MAP.UNKNOWN
 }

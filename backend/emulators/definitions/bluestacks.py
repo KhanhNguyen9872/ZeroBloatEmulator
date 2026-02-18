@@ -1,20 +1,15 @@
 """
 backend/emulators/definitions/bluestacks.py
-Detection strategy for BlueStacks (5 / 10).
+Detection strategy for BlueStacks 4 & 5.
 """
 
 import os
 import logging
-
 from backend.emulators.base import BaseEmulator
 
 logger = logging.getLogger(__name__)
 
-# BlueStacks 5 / 10 main executable
-_EXES = {"hd-player.exe"}
-
-# BlueStacks stores Android images in Engine/ sub-dirs
-_ENGINE_DIR = "Engine"
+_EXES = {"hd-player.exe", "bluestacks.exe", "hd-frontend.exe"}
 
 
 class BlueStacksStrategy(BaseEmulator):
@@ -23,45 +18,50 @@ class BlueStacksStrategy(BaseEmulator):
         return "BLUESTACKS"
 
     def detect(self, path: str) -> dict | None:
+        # Check for any valid BlueStacks executable
         if not self._has_any_file(path, *_EXES):
             return None
+
         logger.info("BlueStacks detected at: %s", path)
-        versions = self._versions(path)
-        if len(versions) == 1:
+
+        detected_version = None
+        
+        # 1. Attempt to detect BlueStacks 5 via config
+        # BS5 usually has HD-Player.exe and a bluestacks.conf
+        if self._has_file(path, "hd-player.exe"):
+            conf_path = os.path.join(path, "bluestacks.conf")
+            if os.path.isfile(conf_path):
+                try:
+                    with open(conf_path, "r", encoding="utf-8", errors="ignore") as f:
+                        if "bst.bluestacks_5" in f.read():
+                            detected_version = "BlueStacks 5"
+                except Exception:
+                    pass
+
+        # 2. Attempt to detect BlueStacks 4 via executables
+        # BS4 typically uses Bluestacks.exe or HD-Frontend.exe as entry points
+        if not detected_version:
+            if self._has_any_file(path, "bluestacks.exe", "hd-frontend.exe"):
+                detected_version = "BlueStacks 4"
+
+        # 3. Return result
+        if detected_version:
             return {
-                "type": "BlueStacks",
-                "versions": versions,
-                "selected": versions[0],
-                "status": "auto_selected",
+                "type": "BLUESTACKS",
+                "detected_version": detected_version,
+                "status": "auto",
+                "options": [],
+                "base_path": path
             }
-        if versions:
-            return {
-                "type": "BlueStacks",
-                "versions": versions,
-                "status": "manual_select_required",
-            }
-        # Detected but no version sub-dirs found — still report it
+
+        # 4. Fallback: verification needed
         return {
-            "type": "BlueStacks",
-            "versions": ["BlueStacks 5"],
-            "selected": "BlueStacks 5",
-            "status": "auto_selected",
+            "type": "BLUESTACKS",
+            "detected_version": None,
+            "status": "manual_select",
+            "options": [
+                {"id": "bs4", "label": "BlueStacks 4"},
+                {"id": "bs5", "label": "BlueStacks 5"},
+            ],
+            "base_path": path
         }
-
-    # ── Helpers ───────────────────────────────────────────────────────────────
-
-    @staticmethod
-    def _versions(path: str) -> list[str]:
-        """Scan Engine/ sub-directories for installed instances."""
-        engine_dir = os.path.join(path, _ENGINE_DIR)
-        if not os.path.isdir(engine_dir):
-            return []
-        versions = []
-        try:
-            for item in sorted(os.listdir(engine_dir)):
-                full = os.path.join(engine_dir, item)
-                if os.path.isdir(full):
-                    versions.append(item)
-        except (PermissionError, FileNotFoundError):
-            pass
-        return versions

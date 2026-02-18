@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { Toaster } from 'sonner'
 
 import { BackendProvider, useBackend } from './context/BackendContext'
-import { DetectAPI } from './services/api'
+import { DetectAPI, SystemAPI } from './services/api'
 import GlobalHeader from './components/GlobalHeader'
 import IntroPage from './pages/IntroPage'
 import FolderBrowserModal from './components/FolderBrowserModal'
@@ -74,10 +74,39 @@ function AppInner() {
   const [detectionResult, setDetectionResult] = useState(null)
   const [diskPath, setDiskPath] = useState('')
 
+  const [isPathRestored, setIsPathRestored] = useState(false)
+
   useDocTitle(screen, showBrowser, detectionResult)
+
+  // ── Persistence ───────────────────────────────────────────────────────────
+  useEffect(() => {
+    const savedPath = localStorage.getItem('last_emulator_path')
+    if (!savedPath) {
+      setIsPathRestored(true)
+      return
+    }
+
+    // validate path
+    const validate = async () => {
+      try {
+        const { data } = await SystemAPI.validatePath(savedPath)
+        if (data.exists) {
+            handleFolderConfirm(savedPath)
+        } else {
+            localStorage.removeItem('last_emulator_path')
+        }
+      } catch {
+        localStorage.removeItem('last_emulator_path')
+      } finally {
+        setIsPathRestored(true)
+      }
+    }
+    validate()
+  }, [])
 
   const handleFolderConfirm = async (path) => {
     setShowBrowser(false)
+    localStorage.setItem('last_emulator_path', path)
     setScreen(SCREENS.DETECTING)
     try {
       const { data } = await DetectAPI.detect(path)
@@ -88,6 +117,15 @@ function AppInner() {
     setScreen(SCREENS.SELECTION)
   }
 
+  const handleResetSession = () => {
+    if (confirm('Are you sure you want to switch folders? Current session will be cleared.')) {
+        localStorage.removeItem('last_emulator_path')
+        setDetectionResult(null)
+        setDiskPath('')
+        setScreen(SCREENS.INTRO)
+    }
+  }
+
   const handleStart = (selectedVersion) => {
     setDiskPath(resolveDiskPath(detectionResult.base_path, detectionResult.type, selectedVersion))
     setScreen(SCREENS.DASHBOARD)
@@ -96,10 +134,17 @@ function AppInner() {
   const handleRetry = () => { setDetectionResult(null); setScreen(SCREENS.INTRO) }
   const handleDisconnect = () => { setDetectionResult(null); setDiskPath(''); setScreen(SCREENS.INTRO) }
 
+  if (!isPathRestored) return null // or a loading spinner
+
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[var(--bg-primary)]">
       {/* Global header – always on top */}
-      <GlobalHeader isDark={isDark} onToggleTheme={toggleTheme} />
+      <GlobalHeader 
+        isDark={isDark} 
+        onToggleTheme={toggleTheme} 
+        currentPath={detectionResult?.base_path}
+        onSwitchFolder={handleResetSession}
+      />
 
       {/* Offset for fixed header height (h-16) */}
       <div className="pt-16">

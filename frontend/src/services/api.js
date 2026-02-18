@@ -47,6 +47,10 @@ export const SystemAPI = {
   getAdminStatus: () =>
     apiClient.get('/api/system/admin-status'),
 
+  /** Validate if a path exists on the server. */
+  validatePath: (path) =>
+    apiClient.post('/api/system/validate-path', { path }),
+
   /** Request UAC elevation (backend will restart as admin). */
   elevate: () =>
     apiClient.post('/api/system/elevate', {}, { timeout: 3000 }),

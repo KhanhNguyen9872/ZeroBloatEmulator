@@ -79,7 +79,7 @@ class QemuManager:
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
 
-        logger.info("QEMU Process started with PID: %d", self.current_process.pid)
+        logger.info("[CORE] QEMU Process started with PID: %d", self.current_process.pid)
         return self.current_process.pid
 
     def stop_service(self) -> None:
@@ -89,28 +89,28 @@ class QemuManager:
         Clears self.current_process on exit.
         """
         if not self.is_running:
-            logger.warning("stop_service() called but no VM is running.")
+            logger.warning("[CORE] stop_service() called but no VM is running.")
             self.current_process = None
             return
 
         pid = self.current_process.pid
-        logger.info("Stopping service (PID %d)…", pid)
+        logger.info("[CORE] Stopping service (PID %d)…", pid)
 
         try:
             self.current_process.terminate()
             try:
                 self.current_process.wait(timeout=2)
-                logger.info("Service stopped (PID %d) via SIGTERM.", pid)
+                logger.info("[CORE] Service stopped (PID %d) via SIGTERM.", pid)
             except subprocess.TimeoutExpired:
-                logger.warning("PID %d did not exit – sending SIGKILL.", pid)
+                logger.warning("[CORE] PID %d did not exit – sending SIGKILL.", pid)
                 self.current_process.kill()
                 self.current_process.wait()
-                logger.info("Service stopped (PID %d) via SIGKILL.", pid)
+                logger.info("[CORE] Service stopped (PID %d) via SIGKILL.", pid)
         except Exception as exc:
-            logger.error("Error stopping service: %s", exc)
+            logger.error("[CORE] Error stopping service: %s", exc)
         finally:
             self.current_process = None
-            logger.info("Service stopped.")
+            logger.info("[CORE] Service stopped.")
 
     # ── Legacy aliases (keep backward-compat with existing code) ─────────
 

@@ -206,6 +206,22 @@ def api_drives():
         return _error(f"Failed to list drives: {exc}")
 
 
+@app.route("/api/system/validate-path", methods=["POST"])
+def api_validate_path():
+    """
+    Check if a directory exists on the server filesystem.
+    Body: { "path": "D:/Games/LDPlayer" }
+    Returns: { "exists": true/false }
+    """
+    data = request.get_json(silent=True) or {}
+    path = data.get("path", "")
+    if not path:
+        return jsonify({"exists": False})
+    
+    path = os.path.normpath(path)
+    return jsonify({"exists": os.path.isdir(path)})
+
+
 @app.route("/api/system/folders", methods=["POST"])
 def api_folders():
     data = request.get_json(silent=True) or {}
