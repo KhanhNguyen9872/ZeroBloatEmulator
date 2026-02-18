@@ -19,7 +19,7 @@ HOST = "0.0.0.0"
 PORT = 5000
 DEBUG = True
 SECRET_KEY = os.urandom(24).hex()  # Random key on every start
-WTF_CSRF_ENABLED = True
+WTF_CSRF_ENABLED = False # User requested temporary disable
 WTF_CSRF_TIME_LIMIT = None         # Valid for session duration
 
 # ---------------------------------------------------------------------------

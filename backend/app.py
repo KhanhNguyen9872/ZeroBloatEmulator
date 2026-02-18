@@ -10,6 +10,7 @@ from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 from flask_wtf.csrf import CSRFProtect, generate_csrf, CSRFError
 from flask_talisman import Talisman
+from threading import Lock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -52,10 +53,62 @@ CORS(app, resources={
 })
 
 # ---------------------------------------------------------------------------
+# PROFILES API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/profiles", methods=["GET"])
+def api_profiles():
+    """
+    Get available debloat profiles for the CURRENTLY selected emulator type.
+    """
+    from backend.emulators.loader import get_strategy
+    
+    # If no emulator type is set yet, we can't return specific profiles
+    if not ssh.emulator_type:
+        return jsonify({"status": "ok", "profiles": []})
+
+    strategy = get_strategy(ssh.emulator_type)
+    if not strategy:
+        return jsonify({"status": "ok", "profiles": []})
+
+    # Try to detect Android version if running
+    android_version = None
+    if qemu.is_running and ssh._client:
+        try:
+             # ro.build.version.release might return "7.1.2", "9", etc.
+             out = ssh.execute_command("getprop ro.build.version.release")
+             if out:
+                 android_version = out.strip()
+        except:
+            pass
+
+    profiles = strategy.get_profiles(android_version=android_version)
+    return jsonify({"status": "ok", "profiles": profiles, "android_version": android_version})
+
+
+@app.route("/api/profiles/<profile_id>", methods=["GET"])
+def api_profile_packages(profile_id):
+    """
+    Get the list of package paths for a specific profile.
+    """
+    from backend.emulators.loader import get_strategy
+    
+    if not ssh.emulator_type:
+         return _error("No emulator type selected. Start the core first.", 400)
+         
+    strategy = get_strategy(ssh.emulator_type) 
+    if not strategy:
+        return _error(f"Unknown strategy for {ssh.emulator_type}", 400)
+        
+    packages = strategy.get_profile_packages(profile_id)
+    return jsonify({"status": "ok", "profile_id": profile_id, "packages": packages})
+
+# ---------------------------------------------------------------------------
 # Singletons
 # ---------------------------------------------------------------------------
 qemu = QemuManager()
 ssh = SSHWorker()
+connection_lock = Lock()
 # Emulator detection is handled by the plugin loader (backend/emulators/)
 
 
@@ -137,6 +190,7 @@ def api_core_start():
         return _error(f"Unknown emulator type: {emu_type}", 400)
 
     # 2. Resolve disk path
+    ssh.set_emulator_type(emu_type)
     try:
         image_path = strategy.get_disk_path(base_path, version_id)
         logger.info("[CORE] Resolved disk path: %s", image_path)
@@ -189,9 +243,34 @@ def api_core_status():
         return jsonify({"status": "stopped", "pid": None})
 
     pid = qemu.pid
-    healthy = ssh.check_health()
+    
+    # Check if we have an active persistent connection
+    if ssh._client is None:
+        # Prevent concurrent connection attempts
+        if connection_lock.acquire(blocking=False):
+            try:
+                # Double-check inside lock
+                if ssh._client is None:
+                    ssh.connect()
+                    ssh.mount_target()
+                    logger.info("[CORE] Persistent SSH connection established and disk mounted.")
+            except Exception as exc:
+                # Fallback to health check to see if it's at least booting
+                logger.debug("[CORE] status check connection failed: %s", exc)
+            finally:
+                connection_lock.release()
+        else:
+            # Another request is already trying to connect; just return 'starting' for now
+            return jsonify({"status": "starting", "pid": pid})
 
+    if ssh._client is not None:
+        return jsonify({"status": "running", "pid": pid})
+
+    # If no persistent connection, check if it's reachable at all
+    healthy = ssh.check_health()
     if healthy:
+        # It's reachable but we failed to connect persistently/mount above.
+        # Report running so frontend might retry scanning, which will trigger connect attempt.
         return jsonify({"status": "running", "pid": pid})
     else:
         return jsonify({"status": "starting", "pid": pid})
@@ -418,6 +497,15 @@ def api_connect():
 def api_apps():
     if not qemu.is_running:
         return _error("No VM is running. Call /api/connect first.", 400)
+    
+    # Ensure connection
+    if ssh._client is None:
+        try:
+            ssh.connect()
+            ssh.mount_target()
+        except Exception as exc:
+             return _error(f"Failed to connect/mount: {exc}")
+
     try:
         bloatware = ssh.list_bloatware()
     except Exception as exc:
@@ -481,9 +569,15 @@ def api_disconnect():
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+# (check_recovery removed - logic moved to vm_manager.py)
+
+
 if __name__ == "__main__":
     # Ensure assets (QEMU, Worker) are present
     bootstrap.initialize()
+
+    # Attempt to recover legacy session
+    qemu.reconnect_session(ssh)
 
     logger.info("ZeroBloatEmulator backend starting on http://0.0.0.0:5000")
     app.run(host="0.0.0.0", port=5000, debug=True)

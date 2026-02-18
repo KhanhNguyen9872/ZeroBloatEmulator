@@ -39,6 +39,20 @@ class BaseEmulator(ABC):
                         May be None if the strategy only detected one version.
         """
 
+    def get_profiles(self, android_version: str | None = None) -> list[dict]:
+        """
+        Return a list of available debloat profiles.
+        Each profile dict should have: { "id": str, "name": str, "description": str }
+        android_version: e.g. "5.1.1", "7.1.2", "9" (detected from running instance)
+        """
+        return []
+
+    def get_profile_packages(self, profile_id: str) -> list[str]:
+        """
+        Return a list of package paths (e.g. "/system/app/Facebook") for the given profile_id.
+        """
+        return []
+
     # ── Shared utilities ──────────────────────────────────────────────────────
 
     @staticmethod

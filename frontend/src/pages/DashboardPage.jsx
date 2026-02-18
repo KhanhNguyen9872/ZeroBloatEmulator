@@ -37,7 +37,7 @@ function ShieldIcon({ className }) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-export default function DashboardPage({ basePath, emulatorType, versionId, onDisconnect }) {
+export default function DashboardPage({ basePath, emulatorType, versionId, autoStart, onDisconnect }) {
   const { t } = useTranslation()
   const { isConnected, isAdmin } = useBackend()
   const [coreStatus, setCoreStatus] = useState('stopped')
@@ -47,6 +47,13 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
   const [selected, setSelected] = useState(new Set())
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [logLines, setLogLines] = useState([])
+  
+  // Track the actual path the VM was started with to detect prompt changes
+  const [runningPath, setRunningPath] = useState(null)
+  
+  const [profiles, setProfiles] = useState([])
+  const [loadingProfile, setLoadingProfile] = useState(null)
+  
   const pollRef = useRef(null)
 
   // ── Polling ───────────────────────────────────────────────────────────────
@@ -54,6 +61,11 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
     try {
       const { data } = await CoreAPI.getStatus()
       setCoreStatus(data.status)
+      // If we recover a running session, we might not know the original path.
+      // But usually we start from stopped.
+      if (data.status === 'stopped') {
+          setRunningPath(null)
+      }
     } catch { setCoreStatus('stopped') }
   }, [])
 
@@ -63,20 +75,45 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
       setLogLines(data.logs ?? [])
     } catch { /* silent */ }
   }, [])
+  
+  const fetchProfiles = useCallback(async () => {
+    try {
+      const { data } = await apiClient.get('/api/profiles')
+      setProfiles(data.profiles ?? [])
+    } catch (err) {
+      console.error("Failed to fetch profiles", err)
+    }
+  }, [])
 
-  useEffect(() => {
-    fetchStatus(); fetchLogs()
-    // User requested to disable auto-polling to reduce log spam
-    // pollRef.current = setInterval(() => { fetchStatus(); fetchLogs() }, 2000)
-    // return () => clearInterval(pollRef.current)
-  }, [fetchStatus, fetchLogs])
+  // Initial fetch
+  useEffect(() => { fetchStatus(); fetchLogs() }, [fetchStatus, fetchLogs])
 
-  // Auto-scan when core becomes running
-  const prevStatus = useRef(coreStatus)
+  // Smart polling & Profiles
   useEffect(() => {
-    if (prevStatus.current !== 'running' && coreStatus === 'running') handleScanApps()
-    prevStatus.current = coreStatus
-  }, [coreStatus])
+    if (coreStatus === 'starting') {
+      pollRef.current = setInterval(async () => {
+        const status = await fetchStatus()
+        if (status === 'running') {
+            clearInterval(pollRef.current)
+            toast.success('Core connected!')
+            
+            // Log to frontend console
+            const timestamp = new Date().toLocaleTimeString('en-GB')
+            setLogLines(prev => [...prev, `[${timestamp}] [INFO] Core connected`])
+            
+            // Refresh real backend logs one last time
+            fetchLogs()
+            
+            // Fetch profiles
+            fetchProfiles()
+        }
+      }, 2000)
+    } else if (coreStatus === 'running') {
+        // Just in case we mounted while already running
+        fetchProfiles()
+    }
+    return () => clearInterval(pollRef.current)
+  }, [coreStatus, fetchStatus, fetchLogs, fetchProfiles])
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const toggleSelected = useCallback((id) => {
@@ -86,18 +123,77 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
       return next
     })
   }, [])
+  
+  const handleProfileSelect = async (profile) => {
+    if (!profile.id) return
+    setLoadingProfile(profile.id)
+    try {
+      const { data } = await apiClient.get(`/api/profiles/${profile.id}`)
+      const packages = data.packages || []
+      
+      setSelected(prev => {
+        const next = new Set(prev)
+        const pathLookup = new Map()
+        const packageLookup = new Map()
 
-  const handleStart = async () => {
+        Object.values(apps).flat().forEach(app => {
+            // app.path is like "system/app/YouTube", or provided with lead slash
+            // Normalize to no leading slash for consistency in ID
+            const normPath = app.path.startsWith('/') ? app.path.substring(1) : app.path
+            pathLookup.set(normPath.toLowerCase(), normPath)
+            
+            if (app.package) {
+                packageLookup.set(app.package.toLowerCase(), normPath)
+            }
+            pathLookup.set(app.name.toLowerCase(), normPath)
+        })
+
+        let count = 0
+        packages.forEach(pkgPath => {
+           const normPkgPath = pkgPath.startsWith('/') ? pkgPath.substring(1) : pkgPath
+           const pkgName = pkgPath.split('/').pop().toLowerCase()
+           
+           let id = pathLookup.get(normPkgPath.toLowerCase())
+           if (!id) id = packageLookup.get(pkgPath.toLowerCase())
+           if (!id) id = pathLookup.get(pkgName)
+           
+           if (id) {
+             next.add(id)
+             count++
+           }
+        })
+        
+        toast.success(t('dashboard.profile_selected', { count, profile: profile.name }))
+        return next
+      })
+    } catch (err) {
+      toast.error("Failed to load profile")
+    } finally {
+      setLoadingProfile(null)
+    }
+  }
+
+  const handleStart = useCallback(async () => {
     if (!isConnected) return
     setActionLoading(true)
     try {
       const { data } = await CoreAPI.start(basePath, emulatorType, versionId)
       toast.success(`Core started (PID ${data.pid})`)
       setCoreStatus('starting')
+      setRunningPath(basePath) // Track active path
     } catch (err) {
       toast.error(`Failed to start core: ${err.response?.data?.message ?? err.message}`)
     } finally { setActionLoading(false) }
-  }
+  }, [isConnected, basePath, emulatorType, versionId])
+
+  // ── Auto-start on mount ───────────────────────────────────────────────────
+  const hasAutoStarted = useRef(false)
+  useEffect(() => {
+    if (isConnected && autoStart && !hasAutoStarted.current && basePath && versionId) {
+      hasAutoStarted.current = true
+      handleStart()
+    }
+  }, [isConnected, autoStart, basePath, versionId, handleStart])
 
   const handleStop = async () => {
     setActionLoading(true)
@@ -105,16 +201,24 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
       await CoreAPI.stop()
       toast.success('Core stopped.')
       setCoreStatus('stopped'); setApps({}); setSelected(new Set())
+      setRunningPath(null)
     } catch (err) {
       toast.error(`Failed to stop core: ${err.response?.data?.message ?? err.message}`)
     } finally { setActionLoading(false) }
   }
 
+  // Detect path mismatch
+  const restartRequired = isConnected && coreStatus === 'running' && runningPath && runningPath !== basePath
+
   const handleScanApps = async () => {
+    if (restartRequired) {
+        toast.error(t('dashboard.restart_required'))
+        return
+    }
     if (coreStatus !== 'running') return
     setAppsLoading(true)
     try {
-      await apiClient.post('/api/connect', { filepath: diskPath })
+      // Core is already running/connected, so just fetch apps
       const { data } = await apiClient.get('/api/apps')
       setApps(data.apps ?? {})
       const total = Object.values(data.apps ?? {}).reduce((s, a) => s + a.length, 0)
@@ -144,12 +248,6 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
     } finally { setActionLoading(false) }
   }
 
-  const handleExit = async () => {
-    setActionLoading(true)
-    try { await CoreAPI.stop() } catch { /* best effort */ }
-    setActionLoading(false); onDisconnect()
-  }
-
   const isRunning = coreStatus === 'running'
   const busy = actionLoading || appsLoading
 
@@ -176,11 +274,17 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
             <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">
               Micro-VM Core
             </h2>
-            <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4 flex flex-col gap-3">
+            <div className={`rounded-lg border ${restartRequired ? 'border-amber-500/50 bg-amber-500/10' : 'border-[var(--border)] bg-[var(--bg-card)]'} p-4 flex flex-col gap-3 transition-colors`}>
               <div className="flex items-center justify-between">
                 <span className="text-xs text-[var(--text-muted)]">{t('dashboard.core_status')}</span>
-                <StatusBadge status={coreStatus} />
+                <StatusBadge status={restartRequired ? 'changing' : coreStatus} />
               </div>
+
+              {restartRequired && (
+                  <div className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-1">
+                      {t('dashboard.restart_required_msg', 'Target changed. Restart core to apply.')}
+                  </div>
+              )}
 
               <AnimatePresence mode="wait">
                 {coreStatus === 'stopped' ? (
@@ -199,9 +303,13 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
                     initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
                     onClick={handleStop}
                     disabled={busy}
-                    className="w-full py-3 rounded-md bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-100 text-sm font-semibold transition-colors disabled:opacity-50 touch-manipulation"
+                    className={`w-full py-3 rounded-md text-sm font-semibold transition-colors disabled:opacity-50 touch-manipulation ${
+                        restartRequired 
+                        ? 'bg-amber-500 hover:bg-amber-600 text-white animate-pulse' 
+                        : 'bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-100'
+                    }`}
                   >
-                    {actionLoading ? t('dashboard.stopping') : `■ ${t('dashboard.stop_core')}`}
+                    {actionLoading ? t('dashboard.stopping') : (restartRequired ? `↻ ${t('dashboard.restart_core', 'Restart Core')}` : `■ ${t('dashboard.stop_core')}`)}
                   </motion.button>
                 )}
               </AnimatePresence>
@@ -259,13 +367,6 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
                   <span className="px-1.5 py-0.5 rounded bg-red-500/30 text-xs">{selected.size}</span>
                 )}
               </button>
-              <button
-                onClick={handleExit}
-                disabled={busy}
-                className="w-full py-3 rounded-md border border-[var(--border)] text-sm text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:border-[var(--accent)] transition-colors disabled:opacity-40 touch-manipulation"
-              >
-                {t('dashboard.save_exit')}
-              </button>
             </div>
           </section>
         </aside>
@@ -274,6 +375,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
         <div className="lg:col-span-8 flex flex-col overflow-hidden h-auto lg:h-full">
           {/* App list */}
           <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+            {/* App List Header */}
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-[var(--text-primary)]">{t('dashboard.installed_apps')}</h2>
               {isRunning && (
@@ -286,9 +388,45 @@ export default function DashboardPage({ basePath, emulatorType, versionId, onDis
                 </button>
               )}
             </div>
-            <AppList apps={apps} selected={selected} onToggle={toggleSelected} loading={appsLoading} />
-          </div>
 
+            <div className="flex flex-1 min-h-0 gap-4">
+                {/* App List */}
+                <div className="flex-1 flex flex-col min-h-0">
+                    <AppList apps={apps} selected={selected} onToggle={toggleSelected} loading={appsLoading} />
+                </div>
+                
+                {/* Profiles Sidebar (Only visible when running & profiles exist) */}
+                {isRunning && profiles.length > 0 && (
+                  <div className="w-64 border-l border-[var(--border)] pl-4 overflow-y-auto hidden md:block">
+                     <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">
+                       {t('dashboard.profiles', 'Debloat Profiles')}
+                     </h2>
+                     <div className="flex flex-col gap-3">
+                       {profiles.map(profile => (
+                         <div 
+                           key={profile.id}
+                           onClick={() => !loadingProfile && handleProfileSelect(profile)}
+                           className={`
+                             border border-[var(--border)] rounded-lg p-3 cursor-pointer
+                             hover:bg-[var(--bg-card)] hover:border-[var(--accent)] hover:shadow-sm transition-all
+                             ${loadingProfile === profile.id ? 'opacity-70 cursor-wait' : ''}
+                           `}
+                         >
+                           <div className="flex items-center justify-between mb-1">
+                             <h3 className="text-sm font-semibold text-[var(--text-primary)]">{profile.name}</h3>
+                             {loadingProfile === profile.id && <svg className="animate-spin w-3 h-3 text-[var(--accent)]" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
+                           </div>
+                           <p className="text-xs text-[var(--text-muted)] leading-relaxed">
+                             {profile.description}
+                           </p>
+                         </div>
+                       ))}
+                     </div>
+                  </div>
+                )}
+            </div>
+          </div>
+          
           {/* Log console – fixed height, responsive */}
           <div className="p-3 sm:p-4 border-t border-[var(--border)] shrink-0 h-48 sm:h-56 md:h-64 lg:h-72 xl:h-80">
             <ConsoleLog logs={logLines} onClear={() => setLogLines([])} />

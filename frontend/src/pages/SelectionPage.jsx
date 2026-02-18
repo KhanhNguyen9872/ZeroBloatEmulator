@@ -193,7 +193,7 @@ function DetectedCard({ result, selectedVersion, onVersionChange, onStart, onRet
             }
           `}
         >
-          {isAuto ? 'Start Debloater' : 'Confirm & Start'}
+          {isAuto ? 'Continue' : 'Confirm & Continue'}
         </motion.button>
       </div>
     </div>

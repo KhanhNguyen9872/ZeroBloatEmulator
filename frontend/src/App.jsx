@@ -57,33 +57,62 @@ function AppInner() {
   // Chỉ lưu ID phiên bản người dùng chọn, không lưu đường dẫn file disk
   const [selectedVersionId, setSelectedVersionId] = useState(null)
   const [isPathRestored, setIsPathRestored] = useState(false)
+  const [shouldAutoStart, setShouldAutoStart] = useState(false)
 
   useDocTitle(screen, showBrowser, detectionResult)
 
   // ── Persistence & Validation ────────────────────────────────────────────────
+  // ── Persistence & Validation ────────────────────────────────────────────────
   useEffect(() => {
+    // 1. If Backend is not live, do nothing and wait
+    if (!isConnected) return
+
+    // 2. If already restored, do not run again
+    if (isPathRestored) return
+
     const savedPath = localStorage.getItem('last_emulator_path')
+    const savedVersion = localStorage.getItem('last_android_version')
+
+    // If nothing to restore, pass
     if (!savedPath) {
       setIsPathRestored(true)
       return
     }
 
-    const validate = async () => {
+    const validateAndRestore = async () => {
       try {
+        // Backend is live, safe to make request
         const { data } = await SystemAPI.validatePath(savedPath)
+        
         if (data.exists) {
-            handleFolderConfirm(savedPath)
+            // Detect emulator info
+            const { data: detectData } = await DetectAPI.detect(savedPath)
+            setDetectionResult({ ...detectData.result, base_path: savedPath })
+
+            if (savedVersion) {
+                // Restore session completely
+                setSelectedVersionId(savedVersion)
+                setShouldAutoStart(false) // Refreshing page should NOT auto-start
+                setScreen(SCREENS.DASHBOARD)
+            } else {
+                setScreen(SCREENS.SELECTION)
+            }
         } else {
+            // Folder invalid, clean up
             localStorage.removeItem('last_emulator_path')
-            setIsPathRestored(true)
+            localStorage.removeItem('last_android_version')
         }
-      } catch {
+      } catch (err) {
+        console.error("Restoration failed:", err)
+        // If API error even if backend is live, clear cache
         localStorage.removeItem('last_emulator_path')
+      } finally {
         setIsPathRestored(true)
       }
     }
-    validate()
-  }, [])
+    
+    validateAndRestore()
+  }, [isConnected, isPathRestored])
 
   const handleFolderConfirm = async (path) => {
     setShowBrowser(false)
@@ -91,18 +120,19 @@ function AppInner() {
     setScreen(SCREENS.DETECTING)
     try {
       const { data } = await DetectAPI.detect(path)
-      // data.result bây giờ chứa cả type, options, và auto-detected version từ backend
+      // data.result contains type, options, auto-detected version
       setDetectionResult({ ...data.result, base_path: path })
+      setScreen(SCREENS.SELECTION)
     } catch {
       setDetectionResult({ type: 'Unknown', base_path: path })
+      setScreen(SCREENS.SELECTION)
     }
-    setIsPathRestored(true)
-    setScreen(SCREENS.SELECTION)
   }
 
   const handleResetSession = () => {
     if (window.confirm('Are you sure you want to switch folders? Current session will be cleared.')) {
         localStorage.removeItem('last_emulator_path')
+        localStorage.removeItem('last_android_version')
         setDetectionResult(null)
         setSelectedVersionId(null)
         setScreen(SCREENS.INTRO)
@@ -110,16 +140,27 @@ function AppInner() {
   }
 
   const handleStart = (versionId) => {
-    // Chỉ lưu ID và chuyển màn hình. 
-    // DashboardPage sẽ gọi API CoreAPI.start(base_path, versionId)
+    // Save version and switch to dashboard
+    localStorage.setItem('last_android_version', versionId)
     setSelectedVersionId(versionId)
+    setShouldAutoStart(false) // Disable auto-start on selection
     setScreen(SCREENS.DASHBOARD)
   }
 
   const handleRetry = () => { setDetectionResult(null); setScreen(SCREENS.INTRO) }
   const handleDisconnect = () => { setDetectionResult(null); setSelectedVersionId(null); setScreen(SCREENS.INTRO) }
-
-  if (!isPathRestored) return null 
+  
+  if (!isPathRestored) {
+      return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-[var(--bg-primary)]">
+             <div className="relative w-16 h-16 mb-6">
+                <div className="absolute inset-0 rounded-full border-4 border-[var(--border)] opacity-30"></div>
+                <div className="absolute inset-0 rounded-full border-4 border-t-[var(--accent)] animate-spin"></div>
+             </div>
+             <p className="text-sm font-medium text-[var(--text-muted)] animate-pulse">Initializing system...</p>
+          </div>
+      )
+  } 
 
   return (
     <div className="relative min-h-screen w-full overflow-x-hidden bg-[var(--bg-primary)]">
@@ -176,7 +217,8 @@ function AppInner() {
               <DashboardPage 
                 basePath={detectionResult?.base_path} 
                 emulatorType={detectionResult?.type}
-                versionId={selectedVersionId} 
+                versionId={selectedVersionId}
+                autoStart={shouldAutoStart}
                 onDisconnect={handleDisconnect} 
               />
             </motion.div>
