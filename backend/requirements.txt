@@ -1,9 +1,0 @@
-flask
-flask-cors
-flask-wtf
-flask-talisman
-psutil
-paramiko
-pywin32
-requests
-tqdm
