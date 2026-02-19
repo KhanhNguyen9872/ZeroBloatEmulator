@@ -98,7 +98,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   // ── SSH connection feedback toast ─────────────────────────────────────
   useEffect(() => {
     if (prevCoreStatus.current === 'starting' && coreStatus === 'running') {
-      toast.success('Core Started. SSH Connection Established!')
+      toast.success('Core Started!')
     }
     prevCoreStatus.current = coreStatus
   }, [coreStatus])
@@ -257,7 +257,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
     } catch (err) {
       const msg = err.response?.data?.message ?? err.message ?? ''
       if (msg.includes(`${cfg?.SSH_PORT ?? 10022}`) || msg.toLowerCase().includes('port')) {
-        toast.error(`Port ${cfg?.SSH_PORT ?? 10022} is blocked! Please close other SSH or emulator apps.`)
+        toast.error(`Port ${cfg?.SSH_PORT ?? 10022} is blocked! Please close other app or emulator apps.`)
       } else {
         toast.error(`Failed to start core: ${msg}`)
       }
