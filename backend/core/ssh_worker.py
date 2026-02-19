@@ -249,10 +249,14 @@ class SSHWorker:
             ("app", "/system/app"),
             ("priv-app", "/priv-app"),
             ("priv-app", "/system/priv-app"),
-            ("vendor-app", "/system/vendor/app"),
-            ("vendor-priv-app", "/system/vendor/priv-app"),
+            ("vendor-app", "/vendor/app"),
+            ("vendor-priv-app", "/vendor/priv-app"),
+            ("product-app", "/product/app"),
+            ("product-priv-app", "/product/priv-app"),
             ("product-app", "/system/product/app"),
             ("product-priv-app", "/system/product/priv-app"),
+            ("vendor-app", "/system/vendor/app"),
+            ("vendor-priv-app", "/system/vendor/priv-app"),
         ]
 
         logger.info("[DEBLOAT] Starting APK scan (skip_packages=%s)...", skip_packages)
@@ -366,6 +370,7 @@ class SSHWorker:
             # stat -c '%a %u %g' path
             # %a = octal mode (e.g. 644), %u = uid, %g = gid
             cmd = f"stat -c '%a %u %g' \"{path}\""
+            logger.info(f"[CORE] {cmd}")
             out = self.execute_command(cmd)
             parts = out.split()
             if len(parts) == 3:
@@ -392,27 +397,7 @@ class SSHWorker:
         except Exception as e:
             logger.warning(f"[CORE] Failed to apply metadata to {path}: {e}")
 
-    def upload_file(self, local_path: str, remote_path: str, preserve_metadata: bool = False) -> None:
-        """Upload a file from local filesystem to the VM via SFTP. Optional: preserve target metadata if overwriting."""
-        if self._client is None:
-            raise RuntimeError("SSH not connected.")
-        
-        metadata = None
-        if preserve_metadata:
-             metadata = self.get_file_metadata(remote_path)
 
-        # logger.debug("[CORE] Generic upload: %s to %s", local_path, remote_path)
-        sftp = self._client.open_sftp()
-        try:
-            # Ensure parent directory exists
-            parent = os.path.dirname(remote_path).replace("\\", "/")
-            self.execute_command(f"mkdir -p {parent}")
-            sftp.put(local_path, remote_path)
-        finally:
-            sftp.close()
-
-        if metadata:
-             self.apply_file_metadata(remote_path, metadata)
 
     def rename_path(self, old_path: str, new_name: str, preserve_metadata: bool = False) -> str:
         """
@@ -647,19 +632,47 @@ class SSHWorker:
         cmd = f'mv "{old_vm_path}" "{new_vm_path}"'
         self.execute_command(cmd)
 
-    def upload_file(self, local_path: str, vm_path: str) -> None:
-        """Upload a file from *local_path* on this machine to *vm_path* on the worker VM via SFTP."""
+    def upload_file(self, local_path: str, remote_path: str, preserve_metadata: bool = False) -> None:
+        """
+        [FIXED] Single upload function for both Bloatware and File Explorer.
+        Uploads a file via SFTP and optionally restores metadata (mode/uid/gid).
+        """
         if self._client is None:
-            raise RuntimeError("Not connected.")
-        
-        sftp = self._client.open_sftp()
+            raise RuntimeError("SSH not connected. Call connect() first.")
+
+        # 1. Capture existing metadata if requested
+        metadata = None
+        if preserve_metadata:
+            try:
+                # Check if file exists on remote before trying to stat
+                check = self.execute_command(f'[ -f "{remote_path}" ] && echo YES || echo NO')
+                if check.strip() == "YES":
+                    metadata = self.get_file_metadata(remote_path)
+            except Exception as e:
+                logger.warning(f"[CORE] Could not capture metadata for {remote_path}: {e}")
+
+        # 2. Perform SFTP Upload with retry logic
+        sftp = None
         try:
-            # Ensure parent dir exists
-            parent = os.path.dirname(vm_path).replace("\\", "/")
-            self.execute_command(f"mkdir -p {parent}")
-            sftp.put(local_path, vm_path)
+            sftp = self._client.open_sftp()
+            # Ensure parent directory exists on the VM
+            parent_dir = os.path.dirname(remote_path).replace("\\", "/")
+            self.execute_command(f"mkdir -p {parent_dir}")
+            
+            logger.info(f"[SFTP] Putting {local_path} -> {remote_path}")
+            sftp.put(local_path, remote_path)
+        except Exception as e:
+            logger.warning(f"[SFTP] Upload failed, attempting reconnect: {e}")
+            self.connect() # Re-establish connection
+            sftp = self._client.open_sftp()
+            sftp.put(local_path, remote_path)
         finally:
-            sftp.close()
+            if sftp:
+                sftp.close()
+
+        # 3. Restore metadata if it was captured
+        if metadata and preserve_metadata:
+            self.apply_file_metadata(remote_path, metadata)
 
     def download_file(self, vm_path: str, local_path: str) -> None:
         """Download a file from *vm_path* on the worker VM to *local_path* on this machine via SFTP."""

@@ -38,7 +38,7 @@ export default function ActionPanel({
   onDelete, 
   onMove, 
   onExport,
-  appsLoading,
+  scanningType, // 'fast' | 'deep' | null
   packagesLoaded
 }) {
   const { t } = useTranslation()
@@ -152,7 +152,7 @@ export default function ActionPanel({
             }
           `}
         >
-          {appsLoading && !packagesLoaded ? (
+          {scanningType === 'fast' ? (
             <span className="flex items-center justify-center gap-2">
               <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -180,7 +180,7 @@ export default function ActionPanel({
             }
           `}
         >
-          {appsLoading && packagesLoaded ? (
+          {scanningType === 'deep' ? (
             <span className="flex items-center justify-center gap-2">
               <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />

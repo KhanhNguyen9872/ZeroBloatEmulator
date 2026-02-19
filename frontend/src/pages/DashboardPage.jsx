@@ -28,7 +28,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
       return saved ? JSON.parse(saved) : {}
     } catch { return {} }
   })
-  const [appsLoading, setAppsLoading] = useState(false)
+  const [scanningType, setScanningType] = useState(null) // 'fast' | 'deep' | null
   const [selected, setSelected] = useState(new Set())
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [logLines, setLogLines] = useState([])
@@ -121,11 +121,8 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
         return
     }
     if (coreStatus !== 'running') return
-    if (!isAndroidMounted) {
-        toast.error(t('dashboard.invalid_mount_msg'))
-        return
-    }
-    setAppsLoading(true)
+
+    setScanningType(isDeep ? 'deep' : 'fast')
     try {
       // Core is already running/connected, so just fetch apps with long timeout
       // isDeep=true means we DON'T skip (skip_packages=false)
@@ -141,7 +138,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
       toast.success(`${isDeep ? 'Deep' : 'Fast'} scan complete. Found ${total} apps`)
     } catch (err) {
       toast.error(`Scan failed: ${err.response?.data?.message ?? err.message}`)
-    } finally { setAppsLoading(false) }
+    } finally { setScanningType(null) }
   }, [coreStatus, isAndroidMounted, restartRequired, t])
 
   // Initial fetch
@@ -178,13 +175,13 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
         
         // Auto-scan if empty and haven't tried yet
         const total = Object.values(apps).reduce((s, a) => s + a.length, 0)
-        if (total === 0 && !appsLoading && !hasAutoScanned.current) {
+        if (total === 0 && !scanningType && !hasAutoScanned.current) {
             hasAutoScanned.current = true
             handleScanApps()
         }
     }
     return () => clearInterval(pollRef.current)
-  }, [coreStatus, isAndroidMounted, fetchStatus, fetchLogs, fetchProfiles, handleScanApps, apps, appsLoading])
+  }, [coreStatus, isAndroidMounted, fetchStatus, fetchLogs, fetchProfiles, handleScanApps, apps, scanningType])
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const toggleSelected = useCallback((id) => {
@@ -420,7 +417,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
 
   const isRunning = coreStatus === 'running'
   const isOperational = isRunning && isAndroidMounted
-  const busy = actionLoading || appsLoading
+  const busy = actionLoading || !!scanningType
   const totalApps = Object.values(apps).reduce((s, a) => s + a.length, 0)
 
   return (
@@ -450,7 +447,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
           onDelete={() => setConfirmDelete(true)}
           onMove={handleMoveTo}
           onExport={handleExportAll}
-          appsLoading={appsLoading}
+          scanningType={scanningType}
           packagesLoaded={packagesLoaded}
         />
 
@@ -479,7 +476,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
                       apps={apps} 
                       selected={selected} 
                       onToggle={toggleSelected} 
-                      loading={appsLoading} 
+                      loading={!!scanningType} 
                       onRefresh={() => handleScanApps(false)}
                       categoryRoots={categoryRoots}
                     />
