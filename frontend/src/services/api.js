@@ -79,8 +79,13 @@ export const AppsAPI = {
     apiClient.post('/api/apps/rename', { path, new_name: newName }),
 
   /** Move an app to a new category. */
-  move: (path, newCategoryRoot) =>
-    apiClient.post('/api/apps/move', { path, new_category_root: newCategoryRoot }),
+  move: (path, targetCategoryRoot) =>
+    apiClient.post('/api/core/apps/move', { path, targetCategoryRoot }),
+  
+  moveBatch: (sources, destination) =>
+    apiClient.post('/api/core/files/move-batch', { sources, destination }),
+  
+  scan: () => apiClient.get('/api/core/apps/scan'),
 }
 
 // ── Logs ──────────────────────────────────────────────────────────────────────
@@ -113,6 +118,118 @@ export const SecurityAPI = {
   /** Fetch a new CSRF token from the backend. */
   getCsrfToken: () => 
     apiClient.get('/api/security/csrf-token'),
+}
+
+// ── File Explorer (remote /mnt/android) ───────────────────────────────────────
+export const FileExplorerAPI = {
+  /** List files in a directory on the mounted Android image. */
+  list: (path = '/') =>
+    apiClient.get('/api/core/files/list', { params: { path } }),
+
+  /** Create a directory on the mounted Android image. */
+  mkdir: (path) =>
+    apiClient.post('/api/core/files/mkdir', { path }),
+
+  /** Delete a file or folder on the mounted Android image. */
+  delete: (path) =>
+    apiClient.post('/api/core/files/delete', { path }),
+
+  /** Rename/move a file or folder (full paths, frontend-relative). */
+  rename: (old_path, new_path) =>
+    apiClient.post('/api/core/files/rename', { old_path, new_path }),
+
+  /** Upload a file to a directory on the mounted Android image. */
+  upload: (file, destPath, overwrite = false) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('path', destPath)
+    fd.append('overwrite', overwrite)
+    return apiClient.post('/api/core/files/upload', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  /**
+   * Download a file from the VM as a browser file save.
+   * Returns a direct URL string (for window.open or <a> href).
+   */
+  downloadUrl: (path) =>
+    `/api/core/files/download?path=${encodeURIComponent(path)}`,
+
+  /** Fetch file as a blob and trigger browser Save-As dialog. */
+  download: async (path, filename) => {
+    const resp = await apiClient.get('/api/core/files/download', {
+      params: { path },
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(resp.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename || path.split('/').pop() || 'download'
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 2000)
+  },
+
+  /** Read a file's text content from the VM. Returns { content, is_binary }. */
+  getContent: (path) =>
+    apiClient.get('/api/core/files/content', { params: { path } }),
+
+  /** Overwrite a text file on the VM with new content. */
+  saveContent: (path, content) =>
+    apiClient.post('/api/core/files/content', { path, content }),
+
+  /** Calculate checksum of a file. algo: 'md5' | 'sha256' */
+  checksum: (path, algo = 'sha256') =>
+    apiClient.get('/api/core/files/checksum', { params: { path, algo } }),
+
+  /** Search for files. */
+  search: (path, query) =>
+    apiClient.get('/api/core/files/search', { params: { path, query } }),
+}
+
+// ── Apps Export ────────────────────────────────────────────────────────────────
+export const AppsExportAPI = {
+  /**
+   * Export an installed APK from the VM as a browser file save.
+   * @param {string} apkPath      - VM path to the APK file (frontend-relative).
+   * @param {string} packageName  - Package name used as the download filename.
+   */
+  export: async (apkPath, packageName) => {
+    const resp = await apiClient.get('/api/core/apps/export', {
+      params: { path: apkPath, package_name: packageName },
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(resp.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${packageName || 'app'}.apk`
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 2000)
+  },
+
+  /**
+   * Batch export multiple files as a ZIP.
+   * @param {Array} files - List of { path, name } objects.
+   */
+  exportBatch: async (files) => {
+    const resp = await apiClient.post('/api/core/apps/export-batch', { files }, {
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(resp.data)
+    const a = document.createElement('a')
+    a.href = url
+    // Content-Disposition header usually handles filename, but fallback:
+    a.download = `exported_apps_${Date.now()}.zip`
+    document.body.appendChild(a)
+    a.click()
+    setTimeout(() => { URL.revokeObjectURL(url); a.remove() }, 2000)
+  },
+
+  /** Returns a direct URL for the export (for window.open). */
+  exportUrl: (apkPath, packageName) =>
+    `/api/core/apps/export?path=${encodeURIComponent(apkPath)}&package_name=${encodeURIComponent(packageName || '')}`,
 }
 
 export default apiClient

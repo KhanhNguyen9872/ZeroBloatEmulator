@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess
 import sys
 
@@ -44,6 +45,16 @@ class QemuManager:
 
     # ── Service control ───────────────────────────────────────────────────
 
+    @staticmethod
+    def is_port_in_use(port: int) -> bool:
+        """Return True if *port* on localhost is already bound by another process."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return False  # bind succeeded → port is free
+            except OSError:
+                return True   # bind failed → port is occupied
+
     def start_service(self, target_path: str | None = None) -> int:
         """
         Spawn the Core Process and return its PID immediately.
@@ -64,6 +75,12 @@ class QemuManager:
             raise RuntimeError(
                 f"A Core VM is already running (PID {self.pid}). "
                 "Call stop_service() first."
+            )
+
+        if self.is_port_in_use(cfg.SSH_PORT):
+            raise RuntimeError(
+                f"Port {cfg.SSH_PORT} is blocked by another application. "
+                "Please close any other SSH or emulator processes and try again."
             )
 
         if not os.path.isfile(cfg.QEMU_EXECUTABLE):

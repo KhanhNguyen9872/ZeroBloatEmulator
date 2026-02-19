@@ -1,18 +1,7 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-interface ConfirmDialogProps {
-  isOpen: boolean;
-  title: string;
-  message: string;
-  confirmText?: string;
-  cancelText?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-  type?: 'warning' | 'danger' | 'info';
-}
-
-const ConfirmDialog: React.FC<ConfirmDialogProps> = ({ 
+const ConfirmDialog = ({ 
   isOpen, 
   title, 
   message, 
@@ -24,7 +13,7 @@ const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 }) => {
   if (!isOpen) return null;
 
-  const colors: Record<string, string> = {
+  const colors = {
     warning: 'text-amber-500 border-amber-500/20 bg-amber-500/10',
     danger: 'text-red-500 border-red-500/20 bg-red-500/10',
     info: 'text-blue-500 border-blue-500/20 bg-blue-500/10'

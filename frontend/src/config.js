@@ -10,7 +10,7 @@
 export const API_BASE_URL = import.meta.env.DEV ? 'http://localhost:5000' : ''
 
 /** Default axios timeout in milliseconds. */
-export const API_TIMEOUT = 10_000
+export const API_TIMEOUT = 120_000
 
 /** How often BackendContext polls /api/health (ms). */
-export const POLL_INTERVAL = 3_000
+export const POLL_INTERVAL = 5_000

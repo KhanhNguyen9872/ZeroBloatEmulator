@@ -1,42 +1,19 @@
 // pages/DashboardPage.jsx – moved from components/MainDashboard.jsx
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { toast } from 'sonner'
-import { motion, AnimatePresence } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { useBackend } from '../context/BackendContext'
 import AppList from '../components/AppList'
 import ConsoleLog from '../components/ConsoleLog'
 import AddAppModal from '../components/AddAppModal'
 import ConfirmDialog from '../components/ConfirmDialog'
-import { CoreAPI, LogsAPI } from '../services/api'
+import FileExplorerModal from '../components/FileExplorer/FileExplorerModal'
+import { CoreAPI, LogsAPI, AppsAPI, AppsExportAPI } from '../services/api'
 import apiClient from '../services/api'
+import ActionPanel from '../components/ActionPanel'
+import FolderBrowserModal from '../components/FolderBrowserModal'
 
-// ── Status badge ──────────────────────────────────────────────────────────────
-function StatusBadge({ status }) {
-  const { t } = useTranslation()
-  const CONFIG = {
-    stopped:  { dot: 'bg-zinc-400',                    cls: 'text-zinc-500 dark:text-zinc-400 border-zinc-300 dark:border-zinc-700' },
-    starting: { dot: 'bg-amber-400 animate-pulse',     cls: 'text-amber-600 dark:text-amber-400 border-amber-300 dark:border-amber-700' },
-    running:  { dot: 'bg-emerald-400 animate-pulse',   cls: 'text-emerald-600 dark:text-emerald-400 border-emerald-300 dark:border-emerald-700' },
-  }
-  const cfg = CONFIG[status] ?? CONFIG.stopped
-  return (
-    <span className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-md border ${cfg.cls}`}>
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${cfg.dot}`} />
-      {t(`status.${status}`, status)}
-    </span>
-  )
-}
 
-// ── Shield icon ───────────────────────────────────────────────────────────────
-function ShieldIcon({ className }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-      <path strokeLinecap="round" strokeLinejoin="round"
-        d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
-    </svg>
-  )
-}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function DashboardPage({ basePath, emulatorType, versionId, autoStart, onDisconnect }) {
@@ -61,6 +38,8 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   const [packagesLoaded, setPackagesLoaded] = useState(false)
   const [confirmDeepScan, setConfirmDeepScan] = useState(false)
   const [showAddApp, setShowAddApp] = useState(false)
+  const [showFileExplorer, setShowFileExplorer] = useState(false)
+  const [showMovePicker, setShowMovePicker] = useState(false)
   const [categoryRoots, setCategoryRoots] = useState(() => {
     try {
       const saved = sessionStorage.getItem('cachedCategoryRoots')
@@ -74,6 +53,7 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
   
   const pollRef = useRef(null)
   const hasAutoScanned = useRef(false)
+  const prevCoreStatus = useRef(null)
 
   // Sync to sessionStorage
   useEffect(() => {
@@ -114,6 +94,14 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
       setLogLines(data.logs ?? [])
     } catch { /* silent */ }
   }, [])
+
+  // ── SSH connection feedback toast ─────────────────────────────────────
+  useEffect(() => {
+    if (prevCoreStatus.current === 'starting' && coreStatus === 'running') {
+      toast.success('Core Started. SSH Connection Established!')
+    }
+    prevCoreStatus.current = coreStatus
+  }, [coreStatus])
   
   const fetchProfiles = useCallback(async () => {
     try {
@@ -166,7 +154,6 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
         const data = await fetchStatus()
         if (data.status === 'running' && data.is_android_mounted !== false) {
             clearInterval(pollRef.current)
-            toast.success('Core connected!')
             
             // Log to frontend console
             const timestamp = new Date().toLocaleTimeString('en-GB')
@@ -246,6 +233,11 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
              count++
            }
         })
+
+        if (count === 0) {
+          toast.info(t('dashboard.profile_no_match', 'No apps from this profile were found on the device.'))
+          return prev // do not mutate selection
+        }
         
         toast.success(t('dashboard.profile_selected', { count, profile: profile.name }))
         return next
@@ -266,7 +258,12 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
       setCoreStatus('starting')
       setRunningPath(basePath) // Track active path
     } catch (err) {
-      toast.error(`Failed to start core: ${err.response?.data?.message ?? err.message}`)
+      const msg = err.response?.data?.message ?? err.message ?? ''
+      if (msg.includes(`${cfg?.SSH_PORT ?? 10022}`) || msg.toLowerCase().includes('port')) {
+        toast.error(`Port ${cfg?.SSH_PORT ?? 10022} is blocked! Please close other SSH or emulator apps.`)
+      } else {
+        toast.error(`Failed to start core: ${msg}`)
+      }
     } finally { setActionLoading(false) }
   }, [isConnected, basePath, emulatorType, versionId])
 
@@ -358,6 +355,69 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
     } finally { setActionLoading(false) }
   }
 
+  // ── Batch Actions ────────────────────────────────────────────────────────
+  const handleMoveTo = () => {
+    if (selected.size === 0) return
+    setShowMovePicker(true)
+  }
+
+  const handleMoveConfirm = async (targetPath) => {
+    setShowMovePicker(false)
+    setActionLoading(true)
+    const sources = Array.from(selected).map(id => `/mnt/android/${id}`)
+    
+    try {
+      const { data } = await AppsAPI.moveBatch(sources, targetPath)
+      toast.success(`Moved ${data.moved?.length || 0} items successfully`)
+      if (data.errors && data.errors.length > 0) {
+         toast.error(`Failed to move ${data.errors.length} items`)
+      }
+      // Refresh
+      handleScanApps(false)
+      setSelected(new Set())
+    } catch (err) {
+      toast.error(`Batch move failed: ${err.response?.data?.message ?? err.message}`)
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
+  const handleExportAll = async () => {
+    if (selected.size === 0) return
+    const files = []
+    
+    // Build file list from selected IDs
+    for (const catList of Object.values(apps)) {
+      for (const app of catList) {
+        // app.id was constructed in AppList as path without leading slash
+        let id = app.path
+        if (id.startsWith('/')) id = id.substring(1)
+        
+        if (selected.has(id)) {
+            files.push({
+                path: app.path, 
+                name: app.name
+            })
+        }
+      }
+    }
+
+    if (files.length === 0) return
+
+    setActionLoading(true)
+    const toastId = toast.loading(`Exporting ${files.length} apps...`)
+    
+    try {
+      await AppsExportAPI.exportBatch(files)
+      toast.success("Export complete!", { id: toastId })
+      setSelected(new Set())
+    } catch (err) {
+      toast.error(`Batch export failed: ${err.message}`, { id: toastId })
+    } finally {
+      setActionLoading(false)
+    }
+  }
+
   const isRunning = coreStatus === 'running'
   const isOperational = isRunning && isAndroidMounted
   const busy = actionLoading || appsLoading
@@ -372,160 +432,27 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-0 lg:gap-6 lg:overflow-hidden overflow-visible">
 
         {/* ── Control panel (left on desktop, top on mobile) ── */}
-        <aside className="
-          lg:col-span-3
-          border-b lg:border-b-0 lg:border-r border-[var(--border)]
-          bg-[var(--bg-secondary)]
-          flex flex-col gap-4
-          p-4 sm:p-5
-          lg:overflow-y-auto
-          h-auto lg:h-full
-        ">
-          {/* Core control */}
-          <section>
-            <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">
-              Micro-VM Core
-            </h2>
-            <div className={`rounded-lg border ${restartRequired ? 'border-amber-500/50 bg-amber-500/10' : 'border-[var(--border)] bg-[var(--bg-card)]'} p-4 flex flex-col gap-3 transition-colors`}>
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-[var(--text-muted)]">{t('dashboard.core_status')}</span>
-                <StatusBadge status={restartRequired ? 'changing' : coreStatus} />
-              </div>
-
-              {restartRequired && (
-                  <div className="text-xs text-amber-600 dark:text-amber-400 font-medium mb-1">
-                      {t('dashboard.restart_required_msg', 'Target changed. Restart core to apply.')}
-                  </div>
-              )}
-
-              {coreStatus === 'running' && !isAndroidMounted && (
-                  <div className="text-xs text-red-600 dark:text-red-400 font-bold mb-1 p-2 bg-red-500/10 rounded border border-red-500/20">
-                      ⚠️ {t('dashboard.invalid_mount_msg', 'Android files not found. Please check your path and restart core.')}
-                  </div>
-              )}
-
-              <AnimatePresence mode="wait">
-                {coreStatus === 'stopped' ? (
-                  <motion.button
-                    key="start"
-                    initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-                    onClick={handleStart}
-                    disabled={busy || !isConnected}
-                    className="w-full py-3 rounded-md bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-sm font-semibold transition-colors disabled:opacity-50 touch-manipulation"
-                  >
-                    {actionLoading ? t('dashboard.starting') : `▶ ${t('dashboard.start_core')}`}
-                  </motion.button>
-                ) : (
-                  <motion.button
-                    key="stop"
-                    initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -4 }}
-                    onClick={(restartRequired || !isAndroidMounted) ? handleRestart : handleStop}
-                    disabled={busy}
-                    className={`w-full py-3 rounded-md text-sm font-semibold transition-colors disabled:opacity-50 touch-manipulation ${
-                        (restartRequired || !isAndroidMounted) 
-                        ? 'bg-amber-500 hover:bg-amber-600 text-white animate-pulse' 
-                        : 'bg-zinc-200 dark:bg-zinc-700 hover:bg-zinc-300 dark:hover:bg-zinc-600 text-zinc-800 dark:text-zinc-100'
-                    }`}
-                  >
-                    {actionLoading ? ((restartRequired || !isAndroidMounted) ? t('dashboard.restarting', 'Restarting...') : t('dashboard.stopping')) : ( (restartRequired || !isAndroidMounted) ? `↻ ${t('dashboard.restart_core', 'Restart Core')}` : `■ ${t('dashboard.stop_core')}`)}
-                  </motion.button>
-                )}
-              </AnimatePresence>
-
-              {coreStatus === 'starting' && (
-                <p className="text-xs text-amber-600 dark:text-amber-400 text-center">
-                  {t('dashboard.waiting_boot')}
-                </p>
-              )}
-            </div>
-          </section>
-
-          {/* Scan */}
-          <section>
-            {/* Fast Scan Button (Default) */}
-            <button
-              onClick={() => handleScanApps(false)}
-              disabled={!isOperational || busy}
-              className={`
-                w-full py-3 rounded-md text-sm font-semibold transition-all touch-manipulation mb-2
-                ${isOperational && !busy
-                  ? 'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] shadow-sm'
-                  : 'bg-[var(--bg-card)]/40 border border-[var(--border)]/40 text-[var(--text-muted)] cursor-not-allowed'
-                }
-              `}
-            >
-              {appsLoading && !packagesLoaded ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  {t('dashboard.scanning')}
-                </span>
-              ) : `⚡ ${t('dashboard.fast_scan')}`}
-            </button>
-
-            {/* Slow Scan Button (Deep) */}
-            <button
-              onClick={() => setConfirmDeepScan(true)}
-              disabled={!isOperational || busy}
-              className={`
-                w-full py-2.5 rounded-md text-xs font-semibold transition-all touch-manipulation
-                ${isOperational && !busy
-                  ? 'bg-[var(--bg-card)] border border-amber-500/50 hover:border-amber-500 text-amber-600 dark:text-amber-400'
-                  : 'bg-[var(--bg-card)]/40 border border-[var(--border)]/40 text-[var(--text-muted)] cursor-not-allowed'
-                }
-              `}
-            >
-              {appsLoading && packagesLoaded ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="animate-spin w-3.5 h-3.5" viewBox="0 0 24 24" fill="none">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth={4} />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  {t('dashboard.scanning')}
-                </span>
-              ) : `🔍 ${t('dashboard.slow_scan')}`}
-            </button>
-            
-            <button
-              onClick={() => setShowAddApp(true)}
-              disabled={!isOperational || busy}
-              className={`
-                w-full py-3 rounded-md text-sm font-semibold transition-all touch-manipulation mt-2
-                ${isOperational && !busy
-                  ? 'bg-[var(--bg-card)] border border-[var(--border)] hover:border-[var(--accent)] text-[var(--accent)]'
-                  : 'bg-[var(--bg-card)]/40 border border-[var(--border)]/40 text-[var(--text-muted)] cursor-not-allowed'
-                }
-              `}
-            >
-              ➕ {t('dashboard.add_app', 'Add a app')}
-            </button>
-          </section>
-
-          {/* Actions */}
-          <section>
-            <h2 className="text-xs font-semibold text-[var(--text-muted)] uppercase tracking-widest mb-3">Actions</h2>
-            <div className="flex flex-col gap-2">
-              <button
-                onClick={() => selected.size > 0 && setConfirmDelete(true)}
-                disabled={!isOperational || busy || selected.size === 0}
-                className={`
-                  w-full flex items-center justify-center gap-2 py-3 rounded-md text-sm font-semibold transition-all touch-manipulation
-                  ${isOperational && selected.size > 0 && !busy
-                    ? 'bg-red-600 hover:bg-red-700 text-white'
-                    : 'bg-red-500/10 text-red-400/50 cursor-not-allowed border border-red-500/20'
-                  }
-                `}
-              >
-                🗑 {t('dashboard.delete_selected')}
-                {selected.size > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-red-500/30 text-xs">{selected.size}</span>
-                )}
-              </button>
-            </div>
-          </section>
-        </aside>
+        <ActionPanel 
+          coreStatus={coreStatus}
+          isAndroidMounted={isAndroidMounted}
+          isConnected={isConnected}
+          busy={busy}
+          loading={actionLoading}
+          restartRequired={restartRequired}
+          onStart={handleStart}
+          onStop={handleStop}
+          onRestart={handleRestart}
+          onScan={() => handleScanApps(false)}
+          onDeepScan={() => setConfirmDeepScan(true)}
+          onAddApp={() => setShowAddApp(true)}
+          onOpenFileExplorer={() => setShowFileExplorer(true)}
+          selectedCount={selected.size}
+          onDelete={() => setConfirmDelete(true)}
+          onMove={handleMoveTo}
+          onExport={handleExportAll}
+          appsLoading={appsLoading}
+          packagesLoaded={packagesLoaded}
+        />
 
         {/* ── Right panel (app list + log) ── */}
         <div className="lg:col-span-9 flex flex-col min-h-0 lg:overflow-hidden overflow-visible">
@@ -630,6 +557,21 @@ export default function DashboardPage({ basePath, emulatorType, versionId, autoS
         onRefresh={handleAppAdded}
         categoryRoots={categoryRoots}
       />
+
+      {/* ── File Explorer Modal ── */}
+      {showFileExplorer && (
+        <FileExplorerModal onClose={() => setShowFileExplorer(false)} />
+      )}
+
+      {/* ── Folder Browser Modal ── */}
+      {showMovePicker && (
+        <FolderBrowserModal 
+           onConfirm={handleMoveConfirm}
+           onClose={() => setShowMovePicker(false)}
+        />
+      )}
+
+
     </div>
   )
 }

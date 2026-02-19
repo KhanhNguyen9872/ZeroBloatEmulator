@@ -241,6 +241,7 @@ function AppInner() {
         isDark={isDark} 
         onToggleTheme={toggleTheme} 
         currentPath={detectionResult?.base_path}
+        detectionResult={detectionResult}
         onSwitchFolder={handleResetSession}
       />
 

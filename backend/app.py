@@ -5,8 +5,12 @@ Run from the project root:  python backend/app.py
 
 import os
 import sys
+import time
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_from_directory, send_file, after_this_request
+import zipfile
+import tempfile
+import shutil
 from flask_cors import CORS
 from flask_wtf.csrf import CSRFProtect, generate_csrf, CSRFError
 from flask_talisman import Talisman
@@ -187,15 +191,35 @@ def api_app_upload():
     tmp_path = tempfile.mktemp(suffix=".apk")
     apk_file.save(tmp_path)
 
+    import hashlib
+
+    # Calculate local SHA256 before upload
+    def calculate_local_sha256(filepath):
+        sha256_hash = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+
     try:
         pkg_name = get_pkg_name(tmp_path)
         
         if not pkg_name:
             pkg_name = sanitize_name(apk_file.filename)
 
+        # Calculate local hash
+        local_hash = calculate_local_sha256(tmp_path)
+        logger.info(f"[CORE] Local APK hash (SHA256): {local_hash}")
+
         # Target full path on VM: /mnt/android/system/app/com.example.app/base.apk
         remote_dir = f"{config.MOUNT_POINT}{target_path}/{pkg_name}"
         remote_apk = f"{remote_dir}/base.apk"
+        
+        # Check overwrite
+        overwrite = request.form.get('overwrite') == 'true'
+        check = ssh.execute_command(f"[ -f \"{remote_apk}\" ] && echo YES || echo NO")
+        if check.strip() == "YES" and not overwrite:
+            return _error(f"App already exists: {pkg_name}", 409)
 
         # Ensure write access
         ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
@@ -203,11 +227,30 @@ def api_app_upload():
         # Create dir
         ssh.execute_command(f"mkdir -p {remote_dir}")
         
-        logger.info(f"[CORE] Uploading APK: {pkg_name}")
-        # Upload
-        ssh.upload_file(tmp_path, remote_apk)
+        logger.info(f"[CORE] Uploading APK: {pkg_name} (overwrite={overwrite})")
+        # Upload with metadata preservation
+        ssh.upload_file(tmp_path, remote_apk, preserve_metadata=True)
         
+        # Verify Integrity
+        try:
+            remote_hash = ssh.calculate_checksum(remote_apk, "sha256")
+            logger.info(f"[CORE] Remote APK hash (SHA256): {remote_hash}")
+            
+            if local_hash != remote_hash:
+                raise ValueError("Integrity Verify Failed: Local and Remote hashes do not match!")
+            
+            logger.info("[CORE] Integrity Verified.")
+        except Exception as verify_err:
+            logger.error(f"[CORE] Verification failed: {verify_err}")
+            # Cleanup remote file
+            ssh.execute_command(f"rm -rf {remote_dir}")
+            raise verify_err
+
         # Set permissions (standard for system apps)
+        # Note: We preserved target metadata if it existed, but for new files or if target didn't exist, we set defaults
+        # If we overwrote, upload_file preserved metadata. But we might want to enforce system standard anyway?
+        # If it was a system app, it should have 644/755. 
+        # Making sure it's correct is safer than just preserving potential garbage.
         ssh.execute_command(f"chmod 755 {remote_dir}")
         ssh.execute_command(f"chmod 644 {remote_apk}")
 
@@ -243,8 +286,667 @@ def api_app_upload():
             except Exception as e:
                 logger.warning(f"Could not remove temp file {tmp_path}: {e}")
 
-# ---------------------------------------------------------------------------
-# Singletons
+# ===========================================================================
+# FILE EXPLORER APIs  (/api/core/files/*)
+# ===========================================================================
+
+import gc
+import posixpath
+import re
+import tempfile
+import unicodedata
+
+from backend.core.file_ops import safe_remote_path as _safe_path
+
+
+def _fe_guard():
+    """Return an error response if core is not ready, else None."""
+    if not qemu.is_running or not ssh._client:
+        return _error("Core not running or SSH not connected.", 503)
+    return None
+
+
+# ── GET /api/core/files/list ─────────────────────────────────────────────────
+
+@app.route("/api/core/files/list", methods=["GET"])
+def api_core_files_list():
+    """List the contents of a directory inside /mnt/android.
+
+    Query param:
+        path (str): Frontend-relative path, e.g. "/" or "/system/app".
+                    Defaults to "/".
+    """
+    if (err := _fe_guard()): return err
+
+    user_path = request.args.get("path", "/")
+    try:
+        vm_path, display_path = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        files = ssh.list_remote_directory(vm_path)
+        return jsonify({
+            "status": "ok",
+            "path": display_path,
+            "current_path": display_path,
+            "files": files,
+        })
+    except Exception as exc:
+        return _error(f"Failed to list directory: {exc}")
+
+
+# ── POST /api/core/files/mkdir ───────────────────────────────────────────────
+
+@app.route("/api/core/files/mkdir", methods=["POST"])
+def api_core_files_mkdir():
+    """Create a directory inside /mnt/android.
+
+    Body (JSON): { "path": "/new/folder" }
+    """
+    if (err := _fe_guard()): return err
+
+    data = request.get_json(silent=True) or {}
+    user_path = data.get("path", "")
+    if not user_path:
+        return _error("Missing 'path'.", 400)
+
+    try:
+        vm_path, display_path = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        ssh.create_folder(vm_path)
+        return jsonify({"status": "ok", "message": f"Folder '{display_path}' created."})
+    except Exception as exc:
+        return _error(f"mkdir failed: {exc}")
+
+
+# ── POST /api/core/files/delete ──────────────────────────────────────────────
+
+@app.route("/api/core/files/delete", methods=["POST"])
+def api_core_files_delete():
+    """Delete a file or folder inside /mnt/android.
+
+    Body (JSON): { "path": "/some/file_or_dir" }
+    """
+    if (err := _fe_guard()): return err
+
+    data = request.get_json(silent=True) or {}
+    user_path = data.get("path", "")
+    if not user_path:
+        return _error("Missing 'path'.", 400)
+
+    try:
+        vm_path, display_path = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    # Safety: never delete the mount root itself
+    if vm_path.rstrip("/") == config.MOUNT_POINT.rstrip("/"):
+        return _error("Cannot delete the filesystem root.", 400)
+
+    try:
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        ssh.delete_item(vm_path)
+        return jsonify({"status": "ok", "message": f"'{display_path}' deleted."})
+    except Exception as exc:
+        return _error(f"delete failed: {exc}")
+
+
+# ── POST /api/core/files/rename ──────────────────────────────────────────────
+
+@app.route("/api/core/files/rename", methods=["POST"])
+def api_core_files_rename():
+    """Rename a file or folder inside /mnt/android.
+
+    Body (JSON): { "old_path": "/old/name", "new_path": "/old/new_name" }
+    """
+    if (err := _fe_guard()): return err
+
+    data = request.get_json(silent=True) or {}
+    old_user = data.get("old_path", "")
+    new_user = data.get("new_path", "")
+    if not old_user or not new_user:
+        return _error("Missing 'old_path' or 'new_path'.", 400)
+
+    try:
+        old_vm, old_display = _safe_path(old_user, config.MOUNT_POINT)
+        new_vm, new_display = _safe_path(new_user, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        # Check if target exists
+        overwrite = data.get("overwrite", False)
+        # Check if new path exists
+        check = ssh.execute_command(f"[ -e \"{new_vm}\" ] && echo YES || echo NO")
+        if check.strip() == "YES" and not overwrite:
+             return _error(f"Target already exists: {new_display}", 409)
+
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        ssh.rename_item(old_vm, new_vm)
+        return jsonify({
+            "status": "ok",
+            "message": "Renamed.",
+            "old_path": old_display,
+            "new_path": new_display,
+        })
+    except Exception as exc:
+        return _error(f"rename failed: {exc}")
+
+
+# ── POST /api/core/files/upload ──────────────────────────────────────────────
+
+@app.route("/api/core/files/upload", methods=["POST"])
+@csrf.exempt
+def api_core_files_upload():
+    """Upload a file to a directory inside /mnt/android.
+
+    Multipart body:
+        file  – The file to upload.
+        path  – Destination directory (frontend-relative), e.g. "/system/app".
+    """
+    if (err := _fe_guard()): return err
+
+    if "file" not in request.files:
+        return _error("No 'file' part in request.", 400)
+
+    upload = request.files["file"]
+    user_dir = request.form.get("path", "/")
+
+    if not upload.filename:
+        return _error("File has no name.", 400)
+
+    def _sanitize(name: str) -> str:
+        name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
+        name = re.sub(r"[^\w.\-]", "_", name)
+        return name.strip("_") or "upload"
+
+    safe_name = _sanitize(upload.filename)
+
+    try:
+        vm_dir, display_dir = _safe_path(user_dir, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    vm_dest = posixpath.join(vm_dir, safe_name)
+
+    # Additional traversal check on the full destination path
+    try:
+        _safe_path("/" + posixpath.relpath(vm_dest, config.MOUNT_POINT), config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    tmp_path = tempfile.mktemp(suffix="_" + safe_name)
+    upload.save(tmp_path)
+
+    try:
+        # Check overwrite
+        overwrite = request.form.get("overwrite") == 'true'
+        check = ssh.execute_command(f"[ -f \"{vm_dest}\" ] && echo YES || echo NO")
+        if check.strip() == "YES" and not overwrite:
+             return _error(f"File already exists: {safe_name}", 409)
+
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        ssh.execute_command(f'mkdir -p "{vm_dir}"')
+        ssh.upload_file(tmp_path, vm_dest, preserve_metadata=True)
+        logger.info("[FileExplorer] Uploaded: %s -> %s", safe_name, vm_dest)
+        return jsonify({
+            "status": "ok",
+            "message": f"'{safe_name}' uploaded to '{display_dir}'.",
+            "name": safe_name,
+        })
+    except Exception as exc:
+        return _error(f"Upload failed: {exc}")
+    finally:
+        gc.collect()
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception as e:
+                logger.warning("Could not remove temp file %s: %s", tmp_path, e)
+
+
+# ── GET /api/core/files/download ─────────────────────────────────────────────
+
+@app.route("/api/core/files/download", methods=["GET"])
+def api_core_files_download():
+    """Download a file from the mounted Android image.
+
+    Query param:
+        path (str): Frontend-relative path of the file, e.g. "/system/app/YouTube/base.apk".
+    """
+    if (err := _fe_guard()): return err
+
+    user_path = request.args.get("path", "")
+    if not user_path:
+        return _error("Missing 'path' query parameter.", 400)
+
+    try:
+        vm_path, _ = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    filename = posixpath.basename(vm_path) or "download"
+    tmp_path = tempfile.mktemp(suffix="_" + filename)
+
+    try:
+        ssh.download_file(vm_path, tmp_path)
+        return send_file(
+            tmp_path,
+            as_attachment=True,
+            download_name=filename,
+        )
+    except Exception as exc:
+        return _error(f"Download failed: {exc}")
+    # Note: temp file cleanup on Windows must happen after send_file returns.
+    # Flask's send_file streams lazily so we schedule it via a finalizer.
+
+
+# ── POST /api/core/files/extract ─────────────────────────────────────────────
+
+@app.route("/api/core/files/extract", methods=["POST"])
+def api_core_files_extract():
+    """Extract an archive (zip, tar, gz, tgz) on the VM.
+
+    Body (JSON): { "path": "/path/to/archive.zip", "dest_path": "/extract/here" }
+    """
+    if (err := _fe_guard()): return err
+
+    data = request.get_json(silent=True) or {}
+    user_path = data.get("path", "")
+    dest_user = data.get("dest_path", "")
+
+    if not user_path:
+        return _error("Missing 'path'.", 400)
+    
+    # default dest to same folder if missing
+    if not dest_user:
+        dest_user = posixpath.dirname(user_path)
+
+    try:
+        vm_path, _ = _safe_path(user_path, config.MOUNT_POINT)
+        vm_dest, _ = _safe_path(dest_user, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        ssh.extract_archive(vm_path, vm_dest)
+        return jsonify({"status": "ok", "message": "Extraction complete."})
+    except Exception as exc:
+        return _error(f"Extraction failed: {exc}")
+
+
+
+# ── GET /api/core/apps/export ─────────────────────────────────────────────────
+
+@app.route("/api/core/apps/export", methods=["GET"])
+def api_core_apps_export():
+    """Export an installed app's APK from the Android image.
+
+    Query params:
+        path         (str): Path to the APK on the VM, e.g. "/system/app/YouTube/base.apk".
+        package_name (str): Package name, used to name the downloaded file.
+    """
+    if (err := _fe_guard()): return err
+
+    user_path    = request.args.get("path", "")
+    package_name = request.args.get("package_name", "").strip()
+
+    if not user_path:
+        return _error("Missing 'path' query parameter.", 400)
+
+    try:
+        vm_path, _ = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    # Build a clean download filename
+    safe_pkg = re.sub(r"[^\w.\-]", "_", package_name) if package_name else "app"
+    download_name = f"{safe_pkg}.apk"
+
+    tmp_path = tempfile.mktemp(suffix=".apk")
+
+    try:
+        ssh.download_file(vm_path, tmp_path)
+        return send_file(
+            tmp_path,
+            as_attachment=True,
+            download_name=download_name,
+            mimetype="application/vnd.android.package-archive",
+        )
+    except Exception as exc:
+        return _error(f"APK export failed: {exc}")
+
+
+# ── GET /api/core/files/content ─────────────────────────────────────────────
+
+@app.route("/api/core/files/content", methods=["GET"])
+def api_core_files_get_content():
+    """Read a file from the VM and return its text content (UTF-8).
+
+    Query param:
+        path (str): VM path relative to the mount point.
+
+    Returns:
+        { status, content, is_binary }
+        is_binary=true means the file cannot be decoded as UTF-8 text.
+    """
+    if (err := _fe_guard()): return err
+
+    user_path = request.args.get("path", "")
+    if not user_path:
+        return _error("Missing 'path' query parameter.", 400)
+
+    try:
+        vm_path, _ = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        result = ssh.get_file_content(vm_path)
+        return jsonify({"status": "ok", **result})
+    except ValueError as e:
+        return _error(str(e), 413)    # 413 Request Entity Too Large
+    except Exception as exc:
+        return _error(f"Could not read file: {exc}")
+
+
+# ── POST /api/core/files/content ─────────────────────────────────────────────
+
+@app.route("/api/core/files/content", methods=["POST"])
+def api_core_files_save_content():
+    """Overwrite a text file on the VM with new UTF-8 content.
+
+    JSON body:
+        path    (str): VM path relative to the mount point.
+        content (str): New file content (UTF-8 text).
+    """
+    if (err := _fe_guard()): return err
+
+    body = request.get_json(silent=True) or {}
+    user_path = body.get("path", "")
+    content   = body.get("content")
+
+    if not user_path:
+        return _error("Missing 'path' in request body.", 400)
+    if content is None:
+        return _error("Missing 'content' in request body.", 400)
+
+    try:
+        vm_path, _ = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        ssh.save_file_content(vm_path, content)
+        return jsonify({"status": "ok", "message": "File saved."})
+    except Exception as exc:
+        return _error(f"Could not save file: {exc}")
+
+
+# ── GET /api/core/files/checksum ─────────────────────────────────────────────
+
+@app.route("/api/core/files/move-batch", methods=["POST"])
+def api_core_files_move_batch():
+    """Batch move files/folders."""
+    if (err := _fe_guard()): return err
+
+    data = request.json or {}
+    sources = data.get("sources", [])
+    destination = data.get("destination", "")
+
+    if not sources or not destination:
+        return _error("Missing 'sources' list or 'destination' path", 400)
+
+    try:
+        # Check write access for destination (remount if needed)
+        # We'll just try to remount /mnt/android rw anyway to be safe, or relies on system logic
+        ssh.execute_command("mount -o remount,rw /mnt/android 2>&1 || true")
+        
+        overwrite = data.get("overwrite", False)
+
+        results = []
+        errors = []
+        conflicts = []
+
+        # First pass: Check for conflicts
+        if not overwrite:
+            for src in sources:
+                 # src is like /system/app/YouTuble
+                 filename = posixpath.basename(src)
+                 
+                 # destination is like /system/priv-app (absolute)
+                 if not destination.startswith(config.MOUNT_POINT):
+                     vm_dest_root = f"{config.MOUNT_POINT}{destination}".replace("//", "/")
+                 else:
+                     vm_dest_root = destination
+                 
+                 vm_target = f"{vm_dest_root}/{filename}".replace("//", "/")
+                 
+                 check = ssh.execute_command(f"[ -e \"{vm_target}\" ] && echo YES || echo NO")
+                 if check.strip() == "YES":
+                      conflicts.append(filename)
+            
+            if conflicts:
+                 return jsonify({
+                     "status": "error",
+                     "message": "Conflict detected",
+                     "conflicts": conflicts
+                 }), 409
+
+        for src in sources:
+            try:
+                # src is like /system/app/YouTuble
+                # destination is like /system/priv-app
+                # verify paths
+                vm_src, _ = _safe_path(src, config.MOUNT_POINT)
+                
+                # destination might be absolute from root or relative
+                # Assuming destination is an absolute path on the android system (e.g. /system/app)
+                # We need to prepend mount point if not present
+                if not destination.startswith(config.MOUNT_POINT):
+                     # If it starts with /, treat as Android root
+                     # if destination = "/system/app", vm_dest = "/mnt/android/system/app"
+                    vm_dest_root = f"{config.MOUNT_POINT}{destination}".replace("//", "/")
+                else:
+                    vm_dest_root = destination
+
+                # Use core logic to move
+                # We can reuse move_path logic or just mv
+                # ssh.move_path expects (old_path, new_category_root_on_android)
+                # But here we have full paths.
+                # Let's use simple mv command to be generic
+                
+                # Check if src exists
+                # Extract filename
+                filename = os.path.basename(vm_src)
+                vm_target = f"{vm_dest_root}/{filename}".replace("//", "/")
+                
+                logger.info(f"[BATCH-MOVE] {vm_src} -> {vm_target}")
+                
+                # Use rename_path logic which now supports metadata preservation (if we exposed it helpers)
+                # simpler: just call ssh.rename_path if it's a rename? No, rename_path assumes same dir or specific args.
+                # Let's reuse the mv command but add metadata support manually if overwrite is True
+                
+                if overwrite:
+                     # Get target metadata if exists
+                     meta = ssh.get_file_metadata(vm_target)
+                     cmd = f'mv "{vm_src}" "{vm_target}"'
+                     ssh.execute_command(cmd)
+                     if meta: ssh.apply_file_metadata(vm_target, meta)
+                else:
+                     cmd = f'mv "{vm_src}" "{vm_target}"'
+                     ssh.execute_command(cmd)
+                
+                results.append(src)
+            except Exception as e:
+                logger.error(f"[BATCH-MOVE] Error moving {src}: {e}")
+                errors.append(f"{src}: {str(e)}")
+
+        return jsonify({
+            "status": "ok",
+            "moved": results,
+            "errors": errors
+        })
+
+    except Exception as exc:
+        return _error(f"Batch move failed: {exc}")
+
+
+@app.route("/api/core/apps/export-batch", methods=["POST"])
+def api_core_apps_export_batch():
+    """Batch export apps as a ZIP file.
+    
+    Input: { "files": [ { "path": "/path/to/apk_or_folder", "name": "Label" }, ... ] }
+    """
+    if (err := _fe_guard()): return err
+
+    data = request.json or {}
+    files = data.get("files", []) # List of { path, name }
+
+    if not files:
+        return _error("No files specified", 400)
+
+    try:
+        # Create a temp dir
+        tmp_dir = tempfile.mkdtemp(prefix="zbe_export_")
+        
+        # We will create a zip file
+        zip_filename = f"exported_apps_{int(time.time())}.zip"
+        zip_path = os.path.join(tmp_dir, zip_filename)
+
+        exported_count = 0
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for item in files:
+                remote_path = item.get("path") # e.g. /mnt/android/system/app/YouTube/base.apk or dir
+                name_label = item.get("name", "unknown")
+                
+                if not remote_path: continue
+                
+                # Check if it starts with mount point, if not assume it's missing it? 
+                # The frontend sends `app.rawPath` which might be `/system/app/YouTube` (Android path)
+                # or `/mnt/android/system/app/YouTube` if we changed logic.
+                # The Task 1 update said we updated ssh_worker to return `path` without mount point? 
+                # Wait, looking at `ssh_worker.py`:
+                # `vm_abs_path = f"{subpath}/{clean_rel}"` -> `/system/app/YouTube/YouTube.apk`
+                # So we need to prepend MOUNT_POINT
+                
+                if not remote_path.startswith(config.MOUNT_POINT):
+                     vm_path = f"{config.MOUNT_POINT}{remote_path}".replace("//", "/")
+                else:
+                    vm_path = remote_path
+
+                # Determine local filename
+                # If it's an APK, we want `{name_label}.apk`
+                # If name_label has no extension, add .apk
+                safe_name = "".join(c for c in name_label if c.isalnum() or c in (' ', '.', '_', '-')).strip()
+                if not safe_name.lower().endswith(".apk"):
+                    safe_name += ".apk"
+                
+                local_file = os.path.join(tmp_dir, safe_name)
+                
+                try:
+                    # Download
+                    # Check if it is a directory or file?
+                    # The scanner now returns path to .apk file, so it should be a file.
+                    ssh.download_file(vm_path, local_file)
+                    
+                    # Add to zip
+                    zipf.write(local_file, arcname=safe_name)
+                    exported_count += 1
+                except Exception as e:
+                    logger.error(f"[BATCH-EXPORT] Failed to export {vm_path}: {e}")
+        
+        if exported_count == 0:
+             shutil.rmtree(tmp_dir)
+             return _error("Failed to export any files", 500)
+
+        # Serve the zip file, then delete tmp_dir
+        @after_this_request
+        def cleanup(response):
+            try:
+                shutil.rmtree(tmp_dir)
+            except Exception as e:
+                logger.error(f"Cleanup failed: {e}")
+            return response
+            
+        return send_file(
+            zip_path,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=zip_filename
+        )
+
+    except Exception as exc:
+        return _error(f"Batch export failed: {exc}")
+
+
+# ── GET /api/core/files/search ───────────────────────────────────────────────
+
+@app.route("/api/core/files/search", methods=["GET"])
+def api_core_files_search():
+    """Search for files in the remote system.
+
+    Query params:
+        path  (str): frontend-relative root path to search from (default '/')
+        query (str): search term (filename glob/substring)
+    """
+    if (err := _fe_guard()): return err
+
+    user_path = request.args.get("path", "/")
+    query = request.args.get("query", "")
+
+    if not query:
+        return _error("Missing 'query'", 400)
+
+    try:
+        vm_path, display_path = _safe_path(user_path, config.MOUNT_POINT)
+    except ValueError as e:
+        return _error(str(e), 400)
+
+    try:
+        results = ssh.search_files(vm_path, query)
+        
+        # Post-process results to be frontend-friendly (relative paths)
+        # ssh.search_files returns 'name' as full absolute path because of how ls is called
+        clean_results = []
+        for item in results:
+            full_abs_path = item["name"]
+            # Relativize to MOUNT_POINT to give a display path
+            # If full_abs_path starts with config.MOUNT_POINT, strip it
+            
+            # Note: item["name"] from ssh.search_files might be just /mnt/android/path/to/file
+            if full_abs_path.startswith(config.MOUNT_POINT):
+                rel_path = full_abs_path[len(config.MOUNT_POINT):]
+            else:
+                rel_path = full_abs_path # fallback
+
+            # Ensure leading slash for display
+            if not rel_path.startswith("/"):
+                rel_path = "/" + rel_path
+                
+            # Update name to be just basename for display in list?
+            # Or keep full path? Frontend usually expects 'name' to be basename for current view
+            # but for search results, we want to know where it is.
+            # We can use 'name' as display name (rel_path) or stick to standard (basename) + extra 'path' field.
+            # FileExplorer usually navigates.
+            
+            item["path"] = rel_path
+            item["name"] = os.path.basename(rel_path)
+            clean_results.append(item)
+            
+        return jsonify({"status": "ok", "results": clean_results})
+    except Exception as exc:
+        return _error(f"Search failed: {exc}")
+
+
+
 # ---------------------------------------------------------------------------
 qemu = QemuManager()
 ssh = SSHWorker()

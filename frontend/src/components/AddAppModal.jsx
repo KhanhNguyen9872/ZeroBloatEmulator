@@ -3,7 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { toast } from 'sonner'
 import apiClient from '../services/api'
 import Select from 'react-select'
+
+
 import { useTranslation } from 'react-i18next'
+import ConfirmDialog from './ConfirmDialog'
 
 export default function AddAppModal({ isOpen, onClose, onRefresh, categoryRoots = {} }) {
   const { t } = useTranslation()
@@ -12,6 +15,7 @@ export default function AddAppModal({ isOpen, onClose, onRefresh, categoryRoots 
   const [selectedTarget, setSelectedTarget] = useState('/system/app')
   const [uploading, setUploading] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
   
   const fileInputRef = useRef(null)
 
@@ -74,13 +78,16 @@ export default function AddAppModal({ isOpen, onClose, onRefresh, categoryRoots 
     }
   }
 
-  const handleUpload = async () => {
+  const handleUpload = async (forceOverwrite = false) => {
     if (!file || !selectedTarget) return
     
     setUploading(true)
     const formData = new FormData()
     formData.append('apk', file)
     formData.append('target_path', selectedTarget)
+    if (forceOverwrite === true) {
+        formData.append('overwrite', 'true')
+    }
 
     try {
       const { data } = await apiClient.post('/api/apps/upload', formData, {
@@ -99,9 +106,14 @@ export default function AddAppModal({ isOpen, onClose, onRefresh, categoryRoots 
       }
 
       onRefresh(data.app, data.category)
+      setShowConfirm(false)
       onClose()
     } catch (err) {
-      toast.error(err.response?.data?.message || t('apk_modal.fail'))
+      if (err.response?.status === 409) {
+          setShowConfirm(true) // Open confirm dialog
+      } else {
+          toast.error(err.response?.data?.message || t('apk_modal.fail'))
+      }
     } finally {
       setUploading(false)
     }
@@ -156,9 +168,10 @@ export default function AddAppModal({ isOpen, onClose, onRefresh, categoryRoots 
   const placeholderText = t('apk_modal.select_placeholder')
 
   return (
+    <>
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+        <div key="add-app-modal" className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -277,6 +290,17 @@ export default function AddAppModal({ isOpen, onClose, onRefresh, categoryRoots 
           </motion.div>
         </div>
       )}
+
     </AnimatePresence>
+    <ConfirmDialog
+        isOpen={showConfirm}
+        title={t('common.conflict', 'Conflict Detected')}
+        message={t('apk_modal.exist_msg', 'This app already exists. Do you want to overwrite it?')}
+        confirmText={t('common.overwrite', 'Overwrite')}
+        onConfirm={() => handleUpload(true)}
+        onCancel={() => setShowConfirm(false)}
+        type="warning"
+    />
+    </>
   )
 }

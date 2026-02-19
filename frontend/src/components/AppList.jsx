@@ -2,8 +2,18 @@ import { DANGEROUS_PACKAGES } from '../config/dangerous'
 import { useTranslation } from 'react-i18next'
 import { useState, useMemo, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { AppsAPI } from '../services/api'
+import { AppsAPI, AppsExportAPI } from '../services/api'
 import { toast } from 'sonner'
+import ConfirmDialog from './ConfirmDialog'
+
+function formatBytes(bytes, decimals = 2) {
+  if (!bytes || bytes === 0) return null
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+}
 
 export default function AppList({ apps, selected, onToggle, loading, onRefresh, categoryRoots }) {
   const { t } = useTranslation()
@@ -20,9 +30,15 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
   const [renameItem, setRenameItem] = useState(null) // { id, name, rawPath }
   const [newName, setNewName] = useState('')
   const [renaming, setRenaming] = useState(false)
+  const [sortKey, setSortKey] = useState('name') // 'name' | 'size' | 'time'
+  const [exportingPkg, setExportingPkg] = useState(null)
   
   const [moveItem, setMoveItem] = useState(null) // app object
   const [moving, setMoving] = useState(false)
+
+  // Single-delete confirmation
+  const [deleteConfirmApp, setDeleteConfirmApp] = useState(null)  // app object pending delete
+  const [deletingApp, setDeletingApp] = useState(false)
   const [userInstalled, setUserInstalled] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('userInstalledApps') || '[]')
@@ -45,27 +61,18 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
   const allApps = useMemo(() => {
     const entries = []
     for (const [category, items] of Object.entries(apps)) {
-      // items is now a list of objects: { name, path, package, category }
       for (const item of items) {
-        // use path as unique ID (it was effectively the ID before)
-        // item: { name: "YouTube", path: "/system/app/YouTube", package: "com.google...", ... }
-        // We strip /mnt/android/ prefix if present but usually apps return relative to mount or absolute in system
-        // The ID used in 'selected' set should be consistent with what we delete.
-        // Previously ID was "app/YouTube". Now we have full path "/system/app/YouTube".
-        // Let's use the path relative to /mnt/android as ID, or just the full path provided by backend?
-        // Backend 'delete' expects paths like "/mnt/android/system/app/YouTube" or just "/system/app/..." if we prepend mount.
-        // Let's look at how delete is handled: handleDelete maps selected ID to `/mnt/android/${id}`.
-        // So ID should be relative like "system/app/YouTube".
-        
         let id = item.path
-        if (id.startsWith('/')) id = id.substring(1) // strip leading slash "system/app/..."
-        
+        if (id.startsWith('/')) id = id.substring(1)
         entries.push({
           id: id,
           name: item.name,
           package: item.package,
           category: category,
-          rawPath: item.path
+          rawPath: item.path,
+          apkFilename: item.apkFilename,
+          size: item.size ?? null,
+          time: item.time ?? null,
         })
       }
     }
@@ -93,8 +100,20 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
         result = result.filter(a => a.category === categoryFilter)
     }
 
+    // Sort
+    result = [...result].sort((a, b) => {
+      if (sortKey === 'size') {
+        return (b.size ?? 0) - (a.size ?? 0)  // largest first
+      } else if (sortKey === 'time') {
+        // newest first
+        return (b.time ?? '').localeCompare(a.time ?? '')
+      }
+      // default: name A-Z
+      return a.name.localeCompare(b.name)
+    })
+
     return result
-  }, [allApps, search, categoryFilter])
+  }, [allApps, search, categoryFilter, sortKey])
 
   const handleToggle = (e, app) => {
     // If the click came from a button inside the row, don't toggle
@@ -134,22 +153,27 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
     setActiveMenu(null)
   }
 
-  const handleSingleDelete = async (app) => {
+  const handleSingleDelete = (app) => {
     setActiveMenu(null)
-    const isDangerous = app.package && DANGEROUS_PACKAGES.includes(app.package)
-    if (isDangerous && !ignoreWarnings) {
-      setPendingId(app.id)
-      setShowDangerousModal(true)
-      return
-    }
+    // Route through confirmation dialog regardless of dangerous status
+    setDeleteConfirmApp(app)
+  }
 
+  const executeSingleDelete = async () => {
+    if (!deleteConfirmApp) return
+    const app = deleteConfirmApp
+    setDeletingApp(true)
+    // Also check dangerous warning AFTER confirmation
     try {
       const fullPath = `/mnt/android/${app.id}`
       await AppsAPI.delete([fullPath])
       toast.success(`Deleted ${app.name}`)
+      setDeleteConfirmApp(null)
       if (onRefresh) onRefresh()
     } catch (err) {
       toast.error(`Delete failed: ${err.response?.data?.message ?? err.message}`)
+    } finally {
+      setDeletingApp(false)
     }
   }
 
@@ -275,13 +299,24 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
             }
           </span>
           
-          <div className="flex gap-3 text-xs">
+          <div className="flex gap-2 items-center text-xs">
+            {/* Sort dropdown */}
+            <select
+              value={sortKey}
+              onChange={e => setSortKey(e.target.value)}
+              className="text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded-md px-2 py-1 text-[var(--text-muted)] focus:outline-none focus:border-blue-500 cursor-pointer"
+            >
+              <option value="name">{t('dashboard.sort_name')}</option>
+              <option value="size">{t('dashboard.sort_size')}</option>
+              <option value="time">{t('dashboard.sort_time')}</option>
+            </select>
+            <span className="text-[var(--border)]">|</span>
             <button
               onClick={() => {
                 filtered.forEach((a) => {
                   if (selected.has(a.id)) return
                   const isDangerous = a.package && DANGEROUS_PACKAGES.includes(a.package)
-                  if (isDangerous && !ignoreWarnings) return // Skip dangerous apps in Select All
+                  if (isDangerous && !ignoreWarnings) return
                   onToggle(a.id)
                 })
               }}
@@ -294,7 +329,7 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
               onClick={() => filtered.forEach((a) => selected.has(a.id) && onToggle(a.id))}
               className="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
             >
-              {t('dashboard.clear')}
+              {t('dashboard.deselect_all')}
             </button>
           </div>
         </div>
@@ -364,17 +399,34 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-[var(--text-muted)] flex items-center gap-1 truncate">
-                        {app.package && (
-                            <span className="font-mono text-[10px] bg-[var(--bg-secondary)] px-1 rounded text-[var(--text-primary)]/70">{app.package}</span>
-                        )}
-                        <span className="w-1 h-1 rounded-full bg-slate-300 dark:bg-slate-600 shrink-0"></span>
-                        {app.category}
-                      </p>
+                        <p className="text-xs text-[var(--text-muted)] flex items-center gap-1 truncate">
+                          {app.package && (
+                              <span className="font-mono text-[10px] bg-[var(--bg-secondary)] px-1 rounded text-[var(--text-primary)]/70 min-w-0 truncate" title={app.package}>{app.package}</span>
+                          )}
+                          {app.apkFilename && (
+                              <span className="font-mono text-[10px] bg-zinc-100 dark:bg-zinc-800 px-1 rounded text-[var(--text-muted)] border border-[var(--border)] min-w-0 truncate hidden sm:inline-block" title={app.apkFilename}>
+                                {app.apkFilename}
+                              </span>
+                          )}
+                          <span className="w-1 h-1 rounded-full bg-slate-300 dark:bg-slate-600 shrink-0"></span>
+                          {app.category}
+                        </p>
                     </div>
 
-                    {/* Action Menu Trigger */}
-                    <div className="relative shrink-0 flex items-center gap-1">
+                    {/* Metadata: size + time */ }
+                    <div className="relative shrink-0 flex items-center gap-4">
+                      <div className="text-right hidden sm:flex flex-col items-end gap-0.5">
+                        {app.size != null && (
+                            <span className="text-xs font-medium text-zinc-600 dark:text-zinc-400 tabular-nums">
+                              {formatBytes(app.size)}
+                            </span>
+                        )}
+                        {app.time && (
+                            <span className="text-[10px] text-zinc-400 dark:text-zinc-500 tabular-nums">
+                              {app.time}
+                            </span>
+                        )}
+                      </div>
                       <button
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
@@ -405,21 +457,21 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
                               onClick={(e) => e.stopPropagation()}
                             >
                                <div className="px-3 py-1.5 text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-widest border-b border-[var(--border)] mb-1">
-                                 Actions
+                                 {t('file_explorer.actions', 'Actions')}
                                </div>
                                
                                <button onClick={() => copyToClipboard(app.name, 'Name')} className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-secondary)] flex items-center gap-2">
-                                 <span>📋</span> Copy Name
+                                 {t('dashboard.copy_name')}
                                </button>
 
                                {app.package && (
                                  <button onClick={() => copyToClipboard(app.package, 'Package')} className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-secondary)] flex items-center gap-2">
-                                   <span>📦</span> Copy Package
+                                   {t('dashboard.copy_package')}
                                  </button>
                                )}
 
                                <button onClick={() => copyToClipboard(app.rawPath, 'Path')} className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-secondary)] flex items-center gap-2">
-                                 <span>📍</span> Copy Path
+                                 {t('dashboard.copy_path')}
                                </button>
 
                                <div className="border-t border-[var(--border)] my-1" />
@@ -431,17 +483,43 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
                                  }} 
                                  className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-secondary)] flex items-center gap-2 text-blue-600 dark:text-blue-400"
                                >
-                                 <span>🚚</span> Move App
+                                 {t('dashboard.move_app')}
                                </button>
+
+                               {app.package && (
+                                 <>
+                                   <div className="border-t border-[var(--border)] my-1" />
+                                     <button
+                                       disabled={exportingPkg === app.package}
+                                       onClick={async () => {
+                                         setActiveMenu(null)
+                                         setExportingPkg(app.package)
+                                         const toastId = toast.loading(`Exporting ${app.name}…`)
+                                         try {
+                                           // APK is at rawPath (backend now returns full file path)
+                                           await AppsExportAPI.export(app.rawPath, app.package)
+                                           toast.success(`Exported ${app.name}`, { id: toastId })
+                                         } catch (err) {
+                                           toast.error(`Export failed: ${err.response?.data?.message ?? err.message}`, { id: toastId })
+                                         } finally {
+                                           setExportingPkg(null)
+                                         }
+                                       }}
+                                       className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-secondary)] text-emerald-600 dark:text-emerald-400 flex items-center gap-2 disabled:opacity-50"
+                                     >
+                                       {exportingPkg === app.package ? t('dashboard.exporting') : t('dashboard.export_apk')}
+                                     </button>
+                                 </>
+                               )}
 
                                <div className="border-t border-[var(--border)] my-1" />
 
                                <button onClick={() => handleRenameClick(app)} className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-secondary)] text-blue-600 dark:text-blue-400 flex items-center gap-2">
-                                 <span>✏️</span> Rename
+                                 {t('file_explorer.rename')}
                                </button>
 
                                <button onClick={() => handleSingleDelete(app)} className="w-full text-left px-3 py-2 text-xs hover:bg-red-500/10 text-red-600 flex items-center gap-2">
-                                 <span>🗑️</span> Delete App
+                                 {t('dashboard.uninstall_app')}
                                </button>
                             </motion.div>
                           </>
@@ -617,6 +695,22 @@ export default function AppList({ apps, selected, onToggle, loading, onRefresh, 
           </div>
         )}
       </AnimatePresence>
+
+      {/* Single-delete confirmation */}
+      <ConfirmDialog
+        isOpen={!!deleteConfirmApp}
+        title="Uninstall App"
+        message={
+          deleteConfirmApp
+            ? `Are you sure you want to uninstall "${deleteConfirmApp.name}"? This action cannot be undone.`
+            : ''
+        }
+        confirmText={deletingApp ? 'Deleting…' : 'Uninstall'}
+        cancelText={t('dashboard.cancel')}
+        onConfirm={executeSingleDelete}
+        onCancel={() => !deletingApp && setDeleteConfirmApp(null)}
+        type="danger"
+      />
     </div>
   )
 }

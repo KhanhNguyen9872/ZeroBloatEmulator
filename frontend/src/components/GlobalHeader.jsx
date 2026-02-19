@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useTranslation } from 'react-i18next'
 import { useBackend } from '../context/BackendContext'
+import { EMULATOR_MAP } from '../config/emulatorMap'
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 function SunIcon() {
@@ -220,7 +221,7 @@ function EditIcon({ className }) {
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
-export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwitchFolder }) {
+export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwitchFolder, detectionResult }) {
   const { t } = useTranslation()
   const { isConnected, isReconnecting, isAdmin, reconnect } = useBackend()
 
@@ -239,7 +240,7 @@ export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwi
             ZeroBloatEmulator
           </span>
           {currentPath && (
-            <div className="flex items-center gap-1 min-w-0 mt-0.5">
+            <div className="flex items-center gap-1 min-w-0 mt-0.5 md:hidden">
               <FolderIcon className="w-3 h-3 text-[var(--accent)] shrink-0" />
               <span className="text-[10px] text-zinc-500 dark:text-zinc-400 truncate font-medium" title={currentPath}>
                 {currentPath}
@@ -249,6 +250,33 @@ export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwi
         </div>
       </div>
 
+      {/* ── Center/Left Desktop: Emulator Context ── */}
+      {detectionResult && (
+        <div 
+          onClick={onSwitchFolder}
+          title="Click to Switch Emulator"
+          className="hidden md:flex items-center gap-4 ml-6 border-l border-zinc-200 dark:border-zinc-800 pl-6 mr-auto cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800/50 transition-colors rounded-md pr-4 py-1"
+        >
+           {/* Emulator Logo */}
+           {EMULATOR_MAP[detectionResult.type] && EMULATOR_MAP[detectionResult.type].logo && (
+             <img 
+               src={EMULATOR_MAP[detectionResult.type].logo} 
+               alt={detectionResult.type} 
+               className="h-6 w-6 object-contain" 
+             />
+           )}
+           {/* Path */}
+           <div className="flex flex-col">
+              <span className="text-[10px] uppercase font-bold text-zinc-500 tracking-wider">
+                {EMULATOR_MAP[detectionResult.type]?.name || detectionResult.type}
+              </span>
+              <span className="text-xs text-zinc-400 font-mono truncate max-w-[300px] xl:max-w-[400px]" title={detectionResult.base_path}>
+                {detectionResult.base_path}
+              </span>
+           </div>
+        </div>
+      )}
+
       {/* ── Right: Actions ── */}
       <div className="flex items-center gap-2">
 
@@ -256,7 +284,7 @@ export default function GlobalHeader({ isDark, onToggleTheme, currentPath, onSwi
         {currentPath && onSwitchFolder && (
           <button
             onClick={onSwitchFolder}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-semibold text-[var(--accent)] hover:bg-[var(--accent)]/10 transition-colors border border-[var(--accent)]/20 md:hidden"
             title="Switch Folder"
           >
             <EditIcon className="w-3.5 h-3.5" />
