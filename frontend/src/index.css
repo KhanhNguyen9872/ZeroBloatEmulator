@@ -52,3 +52,10 @@
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ── Editor Fixes ────────────────────────────────────────────────────────── */
+.code-editor-textarea, 
+.code-editor-highlight {
+  white-space: pre !important; /* Tắt word wrap để đảm bảo 1 dòng code = 1 số dòng */
+  overflow-wrap: normal !important;
+}

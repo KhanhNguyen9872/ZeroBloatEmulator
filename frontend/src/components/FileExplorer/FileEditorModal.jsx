@@ -190,53 +190,61 @@ export default function FileEditorModal({ filePath, onClose, onDownload }) {
         </div>
 
         {/* ── Editor body ── */}
-        <div className="flex-1 min-h-0 relative">
+        <div className="flex-1 min-h-0 relative bg-[#1e1e1e] flex flex-col">
           {loading ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-muted)]">
-              <Loader2 className="w-8 h-8 animate-spin opacity-50" />
-              <span className="text-sm">Loading…</span>
-            </div>
+             <div className="flex flex-col items-center justify-center h-full gap-3 text-[var(--text-muted)]">
+               <Loader2 className="w-8 h-8 animate-spin opacity-50" />
+               <span className="text-sm">Loading…</span>
+             </div>
           ) : error ? (
-            <div className="flex flex-col items-center justify-center h-full gap-3 text-red-500 px-8 text-center">
-              <AlertTriangle className="w-10 h-10 opacity-60" />
-              <p className="text-sm font-medium">Failed to load file</p>
-              <p className="text-xs text-[var(--text-muted)] font-mono break-all">{error}</p>
-              {onDownload && (
-                <button
-                  onClick={onDownload}
-                  className="mt-2 px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium"
-                >
-                  ⬇️ Download instead
-                </button>
-              )}
-            </div>
+             <div className="flex flex-col items-center justify-center h-full gap-3 text-red-500 px-8 text-center">
+               <AlertTriangle className="w-10 h-10 opacity-60" />
+               <p className="text-sm font-medium">Failed to load file</p>
+               <p className="text-xs text-[var(--text-muted)] font-mono break-all">{error}</p>
+             </div>
           ) : (
-            <div className="flex h-full overflow-auto relative">
-              {/* Line numbers */}
+            <div className="flex-1 overflow-auto flex relative">
+              {/* FIX 1: Line Numbers 
+                  - Xóa h-fit, thay bằng min-h-full để nó luôn dãn bằng chiều cao editor
+                  - paddingTop: 16px (để khớp với padding={16} của editor)
+                  - paddingBottom: 16px (để khớp với padding dưới)
+                  - lineHeight: '21px' (đặt cứng pixel để tránh sai số float)
+                  - fontFamily: Đặt cứng giống Editor
+              */}
               <div
-                className="sticky left-0 z-10 h-fit min-h-full select-none text-right text-[12px] font-mono leading-[1.6] py-3 px-3 text-zinc-400 dark:text-zinc-600 bg-[var(--bg-secondary)] border-r border-[var(--border)] overflow-hidden shrink-0 w-12"
+                className="sticky left-0 z-10 min-h-full select-none text-right text-[12px] text-zinc-500 bg-[#1e1e1e] border-r border-white/10 shrink-0 w-12"
+                style={{
+                    fontFamily: '"Fira Code", "Fira Mono", monospace',
+                    lineHeight: '21px', // Đồng bộ Line Height
+                    paddingTop: '16px', // Đồng bộ Padding Top
+                    paddingBottom: '16px' // Đồng bộ Padding Bottom
+                }}
                 aria-hidden="true"
               >
                 {Array.from({ length: lineCount }, (_, i) => (
-                  <div key={i}>{i + 1}</div>
+                  <div key={i} className="px-3">{i + 1}</div>
                 ))}
               </div>
 
-              {/* Textarea */}
-              <Editor
-                value={content}
-                onValueChange={code => setContent(code)}
-                highlight={code => highlight(code, getPrismGrammar(filename) || languages.clike)}
-                padding={16}
-                textareaClassName="focus:outline-none"
-                style={{
-                  fontFamily: '"Fira Code", "Fira Mono", monospace',
-                  fontSize: 14,
-                  backgroundColor: '#1e1e1e',
-                  minHeight: '100%',
-                }}
-                className="flex-1 min-h-full font-mono text-sm leading-[1.6]"
-              />
+              {/* Editor container */}
+              <div className="flex-1 min-w-0 bg-[#1e1e1e]">
+                <Editor
+                  value={content}
+                  onValueChange={code => setContent(code)}
+                  highlight={code => highlight(code, getPrismGrammar(filename) || languages.clike)}
+                  padding={16} // FIX 2: Padding này = 16px
+                  textareaClassName="code-editor-textarea focus:outline-none"
+                  preClassName="code-editor-highlight"
+                  style={{
+                    fontFamily: '"Fira Code", "Fira Mono", monospace',
+                    fontSize: 12, // Đồng bộ font size với line number
+                    lineHeight: '21px', // FIX 3: Line Height cứng 21px
+                    backgroundColor: '#1e1e1e',
+                    minHeight: '100%',
+                  }}
+                  className="font-mono"
+                />
+              </div>
             </div>
           )}
         </div>
