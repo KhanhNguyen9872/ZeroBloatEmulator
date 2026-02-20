@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { SystemAPI } from '../services/api'
-import { toast } from 'sonner'
+import osToast from './OS/osToast';
+const toast = osToast;
 import { useTranslation } from 'react-i18next'
 import ConfirmDialog from './ConfirmDialog'
 

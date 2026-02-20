@@ -98,28 +98,12 @@ class QemuManager:
             "-nographic",
             "-net", f"user,hostfwd=tcp::{cfg.SSH_PORT}-:22",
             "-net", "nic",
+            "-monitor", "tcp:127.0.0.1:4444,server,nowait",
+            "-device", "virtio-scsi-pci,id=scsi0",
             "-drive", f"file={cfg.WORKER_IMAGE},format=qcow2,if=virtio,index=0",
         ]
 
-        if target_path is not None:
-            if not os.path.isfile(target_path):
-                raise FileNotFoundError(f"Target disk image not found: {target_path!r}.")
-            
-            # Detect disk format based on extension
-            ext = os.path.splitext(target_path)[1].lower()
-            disk_fmt = "raw"
-            if ext == ".vmdk":
-                disk_fmt = "vmdk"
-            elif ext == ".qcow2":
-                disk_fmt = "qcow2"
-            elif ext == ".vhd":
-                disk_fmt = "vpc"  # QEMU uses 'vpc' for legacy VHD
-            elif ext == ".vhdx":
-                disk_fmt = "vhdx"
-
-            cmd += ["-drive", f"file={target_path},format={disk_fmt},if=virtio,index=1"]
-
-        logger.debug(f"[CORE] CMD: {" ".join(cmd)}")
+        logger.debug(f"[CORE] CMD: {' '.join(cmd)}")
         # Redirect output to qemu.log for debugging
         log_path = os.path.join(os.path.dirname(cfg.LOG_FILE), "qemu.log")
         self._log_file = open(log_path, "w", encoding="utf-8")
@@ -227,16 +211,10 @@ class QemuManager:
             try:
                 ssh_worker.connect()
                 # If we get here, SSH is working.
-                # Adopt the process.
+                # SSH is working. Adopt the process.
                 self.attach(pid)
-                # Ideally, we should also try to mount the disk if not already mounted,
-                # but ssh_worker.app calls might handle that lazily.
-                # For robustness, let's try to ensure mount.
-                try:
-                    ssh_worker.mount_target()
-                    logger.info("[CORE] Reconnected and verified disk mount.")
-                except Exception as exc:
-                    logger.warning("[CORE] Reconnected to SSH but failed to mount disk: %s", exc)
+                logger.debug("[CORE] Reconnected to existing Core session.")
+
 
                 logger.info("[CORE] Existing Core session detected and recovered (PID: %d)", pid)
                 return True
@@ -261,6 +239,74 @@ class QemuManager:
              logger.error("[CORE] Failed to kill orphaned process: %s", exc)
 
         return False
+
+    # ── Hotplug Operations ────────────────────────────────────────────────
+
+    def send_monitor_command(self, cmd: str) -> str:
+        """Send a command to the QEMU Human Monitor Protocol (HMP) and return the response."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2.0)
+                s.connect(("127.0.0.1", 4444))
+                
+                # Read greeting until we see the '(qemu)' prompt
+                resp = ""
+                while "(qemu)" not in resp:
+                    chunk = s.recv(4096).decode("utf-8", errors="replace")
+                    if not chunk:
+                        break
+                    resp += chunk
+                
+                s.sendall((cmd + "\n").encode("utf-8"))
+                
+                # Receive response until next prompt
+                resp = ""
+                while "(qemu)" not in resp:
+                    chunk = s.recv(4096).decode("utf-8", errors="replace")
+                    if not chunk:
+                        break
+                    resp += chunk
+                
+                return resp
+        except Exception as e:
+            logger.error("[CORE] Monitor command '%s' failed: %s", cmd, e)
+            raise RuntimeError(f"Failed to communicate with QEMU monitor: {e}")
+
+    def hotplug_drive(self, file_path: str, drive_id: str) -> None:
+        """Dynamically attach a virtual disk using VirtIO SCSI."""
+        if not self.is_running:
+            raise RuntimeError("Cannot hotplug: QEMU is not running.")
+        
+        ext = os.path.splitext(file_path)[1].lower()
+        disk_fmt = "raw"
+        if ext == ".vmdk":   disk_fmt = "vmdk"
+        elif ext == ".qcow2": disk_fmt = "qcow2"
+        elif ext == ".vhd":  disk_fmt = "vpc"
+        elif ext == ".vhdx": disk_fmt = "vhdx"
+        elif ext == ".vdi":  disk_fmt = "vdi"
+        
+        # 1. Add the block device
+        drive_cmd = f"drive_add 0 file={file_path},format={disk_fmt},if=none,id={drive_id}"
+        resp_drive = self.send_monitor_command(drive_cmd)
+        logger.debug("[CORE] Hotplug drive_add: %s", resp_drive.strip())
+        
+        # 2. Attach to VirtIO SCSI bus
+        device_cmd = f"device_add scsi-hd,drive={drive_id},id=dev_{drive_id}"
+        resp_dev = self.send_monitor_command(device_cmd)
+        logger.debug("[CORE] Hotplug device_add: %s", resp_dev.strip())
+
+    def hotunplug_drive(self, drive_id: str) -> None:
+        """Dynamically detach a virtual disk using VirtIO SCSI."""
+        if not self.is_running:
+            return
+            
+        dev_cmd = f"device_del dev_{drive_id}"
+        resp_dev = self.send_monitor_command(dev_cmd)
+        logger.debug("[CORE] Hotunplug device_del: %s", resp_dev.strip())
+        
+        drive_cmd = f"drive_del {drive_id}"
+        resp_drive = self.send_monitor_command(drive_cmd)
+        logger.debug("[CORE] Hotunplug drive_del: %s", resp_drive.strip())
 
     # ── Legacy aliases (keep backward-compat with existing code) ─────────
 

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { motion } from 'framer-motion'
 import { X, Save, Loader2, AlertTriangle } from 'lucide-react'
-import { toast } from 'sonner'
+import osToast from '../OS/osToast';
+const toast = osToast;
 import { FileExplorerAPI } from '../../services/api'
 import ConfirmDialog from '../ConfirmDialog'
 

@@ -55,13 +55,11 @@ export const SystemAPI = {
 
 // ── Core (QEMU VM) ────────────────────────────────────────────────────────────
 export const CoreAPI = {
-  /** Start the QEMU VM with the given disk image path. */
-  start: (basePath, emulatorType, versionId) =>
-    apiClient.post('/api/core/start', { 
-      base_path: basePath, 
-      emulator_type: emulatorType, 
-      version_id: versionId 
-    }),
+  /**
+   * Start the QEMU VM. No body needed — server uses worker.qcow2 from config.
+   */
+  start: () =>
+    apiClient.post('/api/core/start'),
 
   /** Stop the running QEMU VM. */
   stop: () =>
@@ -70,6 +68,29 @@ export const CoreAPI = {
   /** Get current VM status: 'stopped' | 'starting' | 'running'. */
   getStatus: () =>
     apiClient.get('/api/core/status'),
+
+  /** Mount a host disk image to the running VM. */
+  mount: (hostPath) =>
+    apiClient.post('/api/core/mount', { path: hostPath }),
+
+  /** Get all currently active hotplug mounts (for shortcut restore on refresh). */
+  getMounts: () =>
+    apiClient.get('/api/core/mounts'),
+
+  /** Unmount and eject a drive from the VM. */
+  eject: (driveId) =>
+    apiClient.post('/api/core/eject', { id: driveId }),
+}
+
+// ── Host File System ──────────────────────────────────────────────────────────
+export const HostAPI = {
+  /** List root drives on the host machine. */
+  getDrives: () =>
+    apiClient.get('/api/host/drives'),
+
+  /** List files & folders at a specific host path. */
+  getFiles: (path) =>
+    apiClient.get('/api/host/files', { params: { path } }),
 }
 
 // ── Apps ──────────────────────────────────────────────────────────────────────
@@ -231,5 +252,9 @@ export const AppsExportAPI = {
   exportUrl: (apkPath, packageName) =>
     `/api/core/apps/export?path=${encodeURIComponent(apkPath)}&package_name=${encodeURIComponent(packageName || '')}`,
 }
+
+// HealthAPI full status check — returns is_running + ssh_connected
+HealthAPI.check = (timeout = 4000) =>
+  apiClient.get('/api/health', { timeout })
 
 export default apiClient

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { toast } from 'sonner'
+import osToast from './OS/osToast';
+const toast = osToast;
 import apiClient from '../services/api'
 import Select from 'react-select'
 

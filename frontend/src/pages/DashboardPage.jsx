@@ -1,6 +1,7 @@
 // pages/DashboardPage.jsx – moved from components/MainDashboard.jsx
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { toast } from 'sonner'
+import osToast from '../components/OS/osToast';
+const toast = osToast;
 import { useTranslation } from 'react-i18next'
 import { useBackend } from '../context/BackendContext'
 import AppList from '../components/AppList'

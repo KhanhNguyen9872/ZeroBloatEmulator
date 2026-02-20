@@ -57,6 +57,95 @@ CORS(app, resources={
 })
 
 # ---------------------------------------------------------------------------
+# CORE POWER MANAGEMENT APIs
+# ---------------------------------------------------------------------------
+
+@app.route("/api/health", methods=["GET"])
+def api_health():
+    """
+    Returns the current running state of the QEMU core.
+    Fast path: checks PID only. Also reports SSH connectivity.
+    Response: { "status": "ok", "is_running": bool, "ssh_connected": bool }
+    """
+    is_running = bool(qemu.is_running)
+    ssh_connected = False
+    if is_running:
+        try:
+            # Lightweight SSH check — check if the SSH client is connected
+            ssh_connected = (ssh._client is not None)
+        except Exception:
+            ssh_connected = False
+    return jsonify({
+        "status": "ok",
+        "is_running": is_running,
+        "ssh_connected": ssh_connected,
+    })
+
+
+@app.route("/api/core/start", methods=["POST"])
+def api_core_start():
+    """
+    Power on the QEMU core.
+    No request body required — the worker image path is configured server-side
+    in config.WORKER_IMAGE (backend/base/image/worker.qcow2).
+    Boot completes when SSH is reachable. Guest drives are NOT auto-mounted;
+    use POST /api/core/mount to attach drives after boot.
+    """
+    # Stop any existing instance cleanly before restarting
+    if qemu.is_running:
+        try:
+            ssh.close()
+        except Exception:
+            pass
+        qemu.stop_service()
+
+    try:
+        pid = qemu.start_service()
+    except Exception as exc:
+        return _error(f"Failed to start Core: {exc}")
+
+    try:
+        ssh.wait_for_connection(timeout=60)
+    except TimeoutError as exc:
+        qemu.stop_service()
+        return _error(f"SSH connection timed out: {exc}")
+    except Exception as exc:
+        qemu.stop_service()
+        return _error(f"SSH error: {exc}")
+
+    # Boot successful — SSH is up. No auto-mount (hotplug architecture).
+    return jsonify({
+        "status": "running",
+        "pid": pid,
+        "message": "Core started. Use /api/core/mount to attach drives.",
+    })
+
+
+
+
+@app.route("/api/core/stop", methods=["POST"])
+def api_core_stop():
+    """
+    Power off the QEMU core gracefully (unmount → close SSH → kill process).
+    """
+    if not qemu.is_running:
+        return jsonify({"status": "ok", "message": "Core was not running."})
+    try:
+        ssh.execute_command("umount /mnt/android 2>/dev/null || true")
+    except Exception:
+        pass
+    try:
+        ssh.close()
+    except Exception:
+        pass
+    try:
+        qemu.stop_service()
+    except Exception as exc:
+        return _error(f"Failed to stop Core: {exc}")
+    return jsonify({"status": "ok", "message": "Core stopped."})
+
+
+# ---------------------------------------------------------------------------
 # PROFILES API
 # ---------------------------------------------------------------------------
 
@@ -310,19 +399,34 @@ def _fe_guard():
 
 @app.route("/api/core/files/list", methods=["GET"])
 def api_core_files_list():
-    """List the contents of a directory inside /mnt/android.
+    """
+    List the contents of a directory inside the guest VM.
 
     Query param:
-        path (str): Frontend-relative path, e.g. "/" or "/system/app".
-                    Defaults to "/".
+        path (str): Absolute guest path.
+                    - Legacy paths under /mnt/android go through _safe_path jail.
+                    - Hotplug paths under /mnt/disk_* are allowed directly.
+                    - All other paths default to listing /mnt/android.
     """
     if (err := _fe_guard()): return err
 
     user_path = request.args.get("path", "/")
-    try:
-        vm_path, display_path = _safe_path(user_path, config.MOUNT_POINT)
-    except ValueError as e:
-        return _error(str(e), 400)
+
+    # Determine whether this is a hotplug partition path or the legacy android mount
+    HOTPLUG_PREFIX = "/mnt/disk_"
+    if user_path.startswith(HOTPLUG_PREFIX):
+        # Security: allow any path under /mnt/ but block traversal attempts
+        normalized = posixpath.normpath(user_path)
+        if not normalized.startswith("/mnt/"):
+            return _error("Path traversal detected.", 400)
+        vm_path = normalized
+        display_path = normalized
+    else:
+        # Legacy: jail path under /mnt/android
+        try:
+            vm_path, display_path = _safe_path(user_path, config.MOUNT_POINT)
+        except ValueError as e:
+            return _error(str(e), 400)
 
     try:
         files = ssh.list_remote_directory(vm_path)
@@ -334,6 +438,8 @@ def api_core_files_list():
         })
     except Exception as exc:
         return _error(f"Failed to list directory: {exc}")
+
+
 
 
 # ── POST /api/core/files/mkdir ───────────────────────────────────────────────
@@ -991,133 +1097,6 @@ def api_csrf_token():
     token = generate_csrf()
     return jsonify({"csrf_token": token})
 
-
-# ===========================================================================
-# HEALTH CHECK
-# ===========================================================================
-
-@app.route("/api/health", methods=["GET"])
-def api_health():
-    """Simple liveness probe used by the frontend BackendContext."""
-    return jsonify({"status": "ok"})
-
-
-# ===========================================================================
-# CORE (QEMU VM) LIFECYCLE APIs
-# ===========================================================================
-
-@app.route("/api/core/start", methods=["POST"])
-def api_core_start():
-    """
-    Body: { 
-      "base_path": "D:/LDPlayer",
-      "emulator_type": "LDPLAYER",
-      "version_id": "ld9" 
-    }
-    Spawns QEMU and returns the PID immediately (does NOT wait for SSH).
-    """
-    from backend.emulators.loader import get_strategy
-
-    data = request.get_json(silent=True) or {}
-    base_path = data.get("base_path")
-    emu_type = data.get("emulator_type")
-    version_id = data.get("version_id")
-
-    if not base_path or not emu_type:
-        return _error("Missing 'base_path' or 'emulator_type' in request body.", 400)
-
-    # 1. Resolve strategy
-    strategy = get_strategy(emu_type)
-    if not strategy:
-        return _error(f"Unknown emulator type: {emu_type}", 400)
-
-    # 2. Resolve disk path
-    ssh.set_emulator_type(emu_type)
-    try:
-        image_path = strategy.get_disk_path(base_path, version_id)
-        logger.info("[CORE] Resolved disk path: %s", image_path)
-    except Exception as exc:
-        return _error(f"Failed to resolve disk path: {exc}")
-
-    if not os.path.isfile(image_path):
-        return _error(f"Image file not found: {image_path}", 400)
-
-    # If core is already started, no need to start next
-    if qemu.is_running:
-        logger.info("[CORE] core already running (PID %d). Returning existing session.", qemu.pid)
-        return jsonify({"status": "ok", "pid": qemu.pid})
-
-    try:
-        pid = qemu.start_service(target_path=image_path)
-        logger.info("Service started. PID: %d", pid)
-        return jsonify({"status": "ok", "pid": pid})
-    except Exception as exc:
-        return _error(f"Failed to start service: {exc}")
-
-
-@app.route("/api/core/stop", methods=["POST"])
-def api_core_stop():
-    """Stop the QEMU VM and close the SSH connection."""
-    try:
-        ssh.close()
-    except Exception:
-        pass
-    try:
-        qemu.stop_service()
-    except Exception as exc:
-        return _error(f"Failed to stop service: {exc}")
-    return jsonify({"status": "ok", "message": "Service stopped."})
-
-
-@app.route("/api/core/status", methods=["GET"])
-def api_core_status():
-    """
-    Returns one of:
-      { "status": "stopped" }   – QEMU process is dead
-      { "status": "starting" }  – QEMU alive but SSH health check fails
-      { "status": "running" }   – QEMU alive AND SSH health check passes
-    """
-    if not qemu.is_running:
-        return jsonify({"status": "stopped", "pid": None})
-
-    pid = qemu.pid
-    
-    # Check if we have an active persistent connection
-    if ssh._client is None:
-        # Prevent concurrent connection attempts
-        if connection_lock.acquire(blocking=False):
-            try:
-                # Double-check inside lock
-                if ssh._client is None:
-                    ssh.connect()
-                    ssh.mount_target()
-                    logger.info("[CORE] Core connection established and disk mounted.")
-            except Exception as exc:
-                # Fallback to health check to see if it's at least booting
-                logger.debug("[CORE] status check connection failed: %s", exc)
-            finally:
-                connection_lock.release()
-        else:
-            # Another request is already trying to connect; just return 'starting' for now
-            return jsonify({"status": "starting", "pid": pid})
-
-    if ssh._client is not None:
-        return jsonify({
-            "status": "running", 
-            "pid": pid,
-            "is_android_mounted": ssh.is_android_mounted
-        })
-
-    # If no persistent connection, check if it's reachable at all
-    healthy = ssh.check_health()
-    if healthy:
-        # It's reachable but we failed to connect persistently/mount above.
-        # Report running so frontend might retry scanning, which will trigger connect attempt.
-        return jsonify({"status": "running", "pid": pid})
-    else:
-        return jsonify({"status": "starting", "pid": pid})
-
-
 # ===========================================================================
 # LOGS API
 # ===========================================================================
@@ -1283,62 +1262,14 @@ def api_detect():
 
 
 # ===========================================================================
-# VM / SSH APIs (legacy – kept for backward compat)
+# VM / SSH aliases (legacy URLs kept for backward compat)
+# Logic lives in /api/core/start and /api/core/stop above.
 # ===========================================================================
 
 @app.route("/api/connect", methods=["POST"])
 def api_connect():
-    data = request.get_json(silent=True) or {}
-    filepath = data.get("filepath")
-    if not filepath:
-        return _error("Missing 'filepath' in request body.", 400)
-    filepath = os.path.normpath(filepath)
-    if not os.path.isfile(filepath):
-        return _error(f"File not found: {filepath}", 400)
-
-    if qemu.is_running:
-        try:
-            ssh.close()
-        except Exception:
-            pass
-        qemu.stop_service()
-
-    try:
-        pid = qemu.start_service(target_path=filepath)
-    except Exception as exc:
-        return _error(f"Failed to start Core: {exc}")
-
-    try:
-        ssh.wait_for_connection(timeout=60)
-    except TimeoutError as exc:
-        qemu.stop_service()
-        return _error(f"SSH connection timed out: {exc}")
-    except Exception as exc:
-        qemu.stop_service()
-        return _error(f"SSH error: {exc}")
-
-    try:
-        mounted_device = ssh.mount_target()
-    except Exception as exc:
-        ssh.close()
-        qemu.stop_service()
-        return _error(f"Failed to mount target disk: {exc}")
-
-    try:
-        partitions_raw = ssh.execute_command(
-            "lsblk -rno NAME,SIZE,TYPE /dev/vdb 2>/dev/null || "
-            "lsblk -rno NAME,SIZE,TYPE /dev/sdb 2>/dev/null || echo ''"
-        )
-        partitions = [line.split() for line in partitions_raw.splitlines() if line.strip()]
-    except Exception:
-        partitions = []
-
-    return jsonify({
-        "status": "connected",
-        "pid": pid,
-        "mounted_device": mounted_device,
-        "partitions": partitions,
-    })
+    """Alias → /api/core/start (legacy URL)."""
+    return api_core_start()
 
 
 @app.route("/api/apps", methods=["GET"])
@@ -1350,13 +1281,18 @@ def api_apps():
     if ssh._client is None:
         try:
             ssh.connect()
-            ssh.mount_target()
         except Exception as exc:
-             return _error(f"Failed to connect/mount: {exc}")
+             return _error(f"Failed to connect: {exc}")
+
+    # Use specified mount path (from hotplug) or default to /mnt/android
+    # The frontend wizard (Phase 2/3) should pass this parameter.
+    mount_path = request.args.get("mount_path", config.MOUNT_POINT)
 
     try:
         skip = request.args.get("skip_packages", "false").lower() == "true"
-        bloatware_data = ssh.list_bloatware(skip_packages=skip)
+        # list_bloatware should accept an optional base path
+        bloatware_data = ssh.list_bloatware(skip_packages=skip, base_path=mount_path)
+
     except Exception as exc:
         return _error(f"Failed to list apps: {exc}")
     
@@ -1450,21 +1386,308 @@ def api_delete():
 
 @app.route("/api/disconnect", methods=["POST"])
 def api_disconnect():
-    if not qemu.is_running:
-        return jsonify({"status": "ok", "message": "No VM was running."})
+    """Alias → /api/core/stop (legacy URL)."""
+    return api_core_stop()
+
+@app.route("/api/core/mounts", methods=["GET"])
+def api_core_mounts():
+    """
+    Return all currently active hotplug mounts inside the guest VM.
+    Queries /mnt/disk_* mount points via findmnt in the guest.
+    Used by the frontend to restore desktop shortcuts after a page refresh.
+    """
+    if not qemu.is_running or not ssh._client:
+        return jsonify({"status": "ok", "mounts": []})
+
     try:
-        ssh.execute_command("umount /mnt/android 2>/dev/null || true")
-    except Exception:
-        pass
-    try:
-        ssh.close()
-    except Exception:
-        pass
-    try:
-        qemu.stop_service()
+        # List all mounted filesystems under /mnt/disk_
+        raw = ssh.execute_command(
+            "findmnt -rno TARGET,SOURCE,FSTYPE --list 2>/dev/null | grep '/mnt/disk_' || true"
+        ).strip()
+
+        mounts = []
+        seen_drives = {}  # drive_id → drive entry
+
+        for line in raw.splitlines():
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            target = parts[0]  # e.g. /mnt/disk_drv_41221c8b/sdc1
+            source = parts[1]  # e.g. /dev/sdc1
+            fstype = parts[2] if len(parts) > 2 else "unknown"
+
+            # Parse drive_id from path: /mnt/disk_{drive_id}[/{part_name}]
+            path_parts = target.split("/")  # e.g. /mnt/disk_drv_abc/sdc1 or /mnt/disk_drv_abc
+            if len(path_parts) < 3:
+                continue
+            disk_part = path_parts[2]  # e.g. disk_drv_41221c8b
+            if not disk_part.startswith("disk_"):
+                continue
+            drive_id = disk_part[5:]  # strip "disk_" prefix
+            # Partition name is the 4th segment if it exists
+            part_name = path_parts[3] if len(path_parts) > 3 else ""
+
+
+            if drive_id not in seen_drives:
+                seen_drives[drive_id] = {
+                    "id": drive_id,
+                    "base_mount": f"/mnt/disk_{drive_id}",
+                    "partitions": [],
+                }
+            seen_drives[drive_id]["partitions"].append({
+                "partition": source,
+                "mount_path": target,
+                "fstype": fstype,
+                "mounted": True,
+            })
+
+        mounts = list(seen_drives.values())
+        return jsonify({"status": "ok", "mounts": mounts})
+
     except Exception as exc:
-        return _error(f"Failed to stop VM: {exc}")
-    return jsonify({"status": "ok", "message": "VM stopped."})
+        logger.error("[CORE] Failed to list mounts: %s", exc)
+        return jsonify({"status": "ok", "mounts": []})
+
+
+@app.route("/api/core/mount", methods=["POST"])
+def api_core_mount():
+
+    """
+    Hotplug a host disk image into the running VM and mount all its partitions.
+    Body: { "path": "/host/path/to/disk.vmdk" }
+    Returns a list of all partition mounts:
+      { id, device, mounts: [{partition, mount_path},...] }
+    """
+    if not qemu.is_running:
+        return _error("Core VM is not running.", 400)
+
+    data = request.get_json(silent=True) or {}
+    host_path = data.get("path")
+
+    if not host_path or not os.path.exists(host_path):
+        return _error("Invalid or missing host path.", 400)
+
+    import hashlib, re
+    drive_id = "drv_" + hashlib.md5(host_path.encode()).hexdigest()[:8]
+    base_mount = f"/mnt/disk_{drive_id}"
+
+    def list_real_disks():
+        """Return set of real disk device names (excludes floppy/loop/cdrom)."""
+        out = ssh.execute_command(
+            "lsblk -nd -o NAME,TYPE 2>/dev/null"
+        ).strip()
+        disks = set()
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "disk":
+                name = parts[0].strip()
+                # Skip floppy (fd*), loop devices (loop*), cdrom (sr*)
+                if not re.match(r'^(fd|loop|sr)\d*$', name):
+                    disks.add(name)
+        return disks
+
+    def list_partitions(disk_name: str) -> list:
+        """Return list of partition device names for a given disk."""
+        out = ssh.execute_command(
+            f"lsblk -rno NAME,TYPE /dev/{disk_name} 2>/dev/null"
+        ).strip()
+        parts = []
+        for line in out.splitlines():
+            cols = line.split()
+            if len(cols) >= 2 and cols[1] == "part":
+                parts.append(cols[0].strip())
+        return parts
+
+    try:
+        # 1. Snapshot real disks BEFORE hotplug
+        before = list_real_disks()
+        logger.debug("[CORE] Disks before hotplug: %s", before)
+
+        # 2. Hotplug the drive into QEMU
+        qemu.hotplug_drive(host_path, drive_id)
+
+        # 3. Poll until a new real disk appears (up to 6s)
+        new_disk_name = None
+        for _ in range(6):
+            time.sleep(1)
+            after = list_real_disks()
+            new = after - before
+            if new:
+                new_disk_name = sorted(new)[0]
+                break
+
+        if not new_disk_name:
+            raise RuntimeError(
+                "Could not detect newly hotplugged disk — "
+                "no new block devices found after 6 seconds."
+            )
+
+        device_path = f"/dev/{new_disk_name}"
+        logger.info("[CORE] Hotplugged drive detected: %s", device_path)
+
+        # 4. Discover partitions on the new disk
+        partitions = list_partitions(new_disk_name)
+        logger.info("[CORE] Partitions found: %s", partitions)
+
+        mounts = []
+
+        if partitions:
+            # Mount each partition to its own sub-directory
+            for part_name in partitions:
+                part_dev  = f"/dev/{part_name}"
+                part_mnt  = f"{base_mount}/{part_name}"
+                ok = ssh.hot_mount(part_dev, part_mnt)
+                mounts.append({
+                    "partition": part_dev,
+                    "mount_path": part_mnt,
+                    "mounted": ok,
+                })
+                logger.info(
+                    "[CORE] Partition %s → %s (%s)",
+                    part_dev, part_mnt, "OK" if ok else "FAILED"
+                )
+        else:
+            # No partition table — mount the raw disk directly
+            raw_mnt = base_mount
+            ok = ssh.hot_mount(device_path, raw_mnt)
+            mounts.append({
+                "partition": device_path,
+                "mount_path": raw_mnt,
+                "mounted": ok,
+            })
+
+        successfully_mounted = [m for m in mounts if m["mounted"]]
+        if not successfully_mounted:
+            raise RuntimeError(
+                f"No partitions could be mounted from {device_path}. "
+                "The image may use an unsupported filesystem."
+            )
+
+        return jsonify({
+            "status": "ok",
+            "id": drive_id,
+            "device": device_path,
+            "mounts": mounts,
+            "message": (
+                f"Mounted {len(successfully_mounted)}/{len(mounts)} "
+                f"partition(s) from {device_path}."
+            ),
+        })
+
+    except Exception as exc:
+        logger.error("[CORE] Mount failed: %s", exc)
+        # Best-effort cleanup
+        try:
+            ssh.execute_command(f"umount -R {base_mount} 2>/dev/null || true")
+        except Exception:
+            pass
+        try:
+            qemu.hotunplug_drive(drive_id)
+        except Exception:
+            pass
+        return _error(f"Mount failed: {exc}", 500)
+
+
+
+
+@app.route("/api/core/eject", methods=["POST"])
+def api_core_eject():
+    """Unmounts all partitions and hot-unplugs a drive from the VM."""
+    if not qemu.is_running:
+        return _error("Core VM is not running.", 400)
+
+    data = request.get_json(silent=True) or {}
+    drive_id = data.get("id")
+
+    if not drive_id:
+        return _error("Missing drive ID.", 400)
+
+    base_mount = f"/mnt/disk_{drive_id}"
+
+    try:
+        # 1. Recursively unmount all partitions inside the guest OS
+        ssh.execute_command(f"umount -R {base_mount} 2>/dev/null || true")
+        ssh.execute_command(f"rm -rf {base_mount} 2>/dev/null || true")
+
+        
+        # 2. Hot-unplug from QEMU
+        qemu.hotunplug_drive(drive_id)
+        
+        return jsonify({
+            "status": "ok", 
+            "message": f"Successfully ejected drive {drive_id}"
+        })
+    except Exception as exc:
+        logger.error(f"[CORE] Eject failed: {exc}")
+        return _error(f"Eject failed: {exc}", 500)
+
+
+# ---------------------------------------------------------------------------
+# HOST FILE SYSTEM APIs
+# ---------------------------------------------------------------------------
+
+@app.route("/api/host/drives", methods=["GET"])
+def api_host_drives():
+    """Return a list of root drives on the host machine."""
+    import platform
+    drives = []
+    if os.name == 'nt':
+        import ctypes
+        bitmask = ctypes.windll.kernel32.GetLogicalDrives()
+        for i in range(26):
+            if bitmask & (1 << i):
+                drives.append(chr(65 + i) + ":\\")
+    else:
+        drives.append("/")
+    
+    return jsonify({"status": "ok", "drives": drives})
+
+@app.route("/api/host/files", methods=["GET"])
+def api_host_files():
+    """
+    List files/folders from the HOST machine.
+    Query param: path (str)
+    """
+    path = request.args.get("path", "")
+    if not path:
+        return _error("Missing 'path' query parameter.", 400)
+            
+    if not os.path.exists(path):
+        return _error(f"Path not found: {path}", 404)
+        
+    try:
+        files = []
+        with os.scandir(path) as it:
+            for entry in it:
+                is_dir = entry.is_dir()
+                try:
+                    stat = entry.stat()
+                    size = stat.st_size if not is_dir else 0
+                    mod_time = stat.st_mtime
+                except Exception:
+                    size = 0
+                    mod_time = 0
+                    
+                files.append({
+                    "name": entry.name,
+                    "type": "directory" if is_dir else "file",
+                    "size": size,
+                    "modified_time": mod_time
+                })
+        
+        # Sort directories first, then by name
+        files.sort(key=lambda x: (x["type"] != "directory", x["name"].lower()))
+                
+        return jsonify({
+            "status": "ok",
+            "path": path,
+            "current_path": path,
+            "files": files
+        })
+    except PermissionError:
+        return _error(f"Permission denied: {path}", 403)
+    except Exception as exc:
+        return _error(f"Failed to read directory: {exc}", 500)
 
 
 # ---------------------------------------------------------------------------

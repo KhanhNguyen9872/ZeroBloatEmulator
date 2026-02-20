@@ -1,5 +1,8 @@
 import os
+import socket
+import time
 from datetime import datetime
+
 import paramiko
 import sys
 
@@ -76,6 +79,91 @@ class SSHWorker:
             self._client.close()
             self._client = None
             logger.info("[CORE] Core disconnected.")
+
+    # ── Hotplug mount ─────────────────────────────────────────────────────
+
+    def hot_mount(self, device_path: str, mount_point: str) -> bool:
+        """
+        Mount a hotplugged block device inside the guest VM.
+
+        Uses blkid to detect the filesystem type, then mounts with the correct
+        options and type. Handles: ext4/3/2, f2fs, squashfs, erofs, ntfs,
+        vfat, exfat, and raw fallback.
+
+        Args:
+            device_path:  Guest device, e.g. '/dev/sdb1'.
+            mount_point:  Guest directory, e.g. '/mnt/disk_drv_abc123/sdb1'.
+
+        Returns:
+            True if mount is verified via 'mountpoint -q', False otherwise.
+        """
+        try:
+            self.execute_command(f"mkdir -p {mount_point}")
+
+            # 1. Detect filesystem type with blkid
+            fs_type = self.execute_command(
+                f"blkid -o value -s TYPE {device_path} 2>/dev/null"
+            ).strip().lower()
+            logger.info("[CORE] hot_mount: %s detected fs type: '%s'", device_path, fs_type)
+
+            # 2. Build mount command based on detected fs type
+            if fs_type in ("ext4", "ext3", "ext2"):
+                mount_cmd = (
+                    f"mount -t {fs_type} -o rw,noatime,errors=remount-ro "
+                    f"{device_path} {mount_point}"
+                )
+            elif fs_type == "f2fs":
+                # f2fs may need 'ro' if kernel module is missing rw support
+                mount_cmd = (
+                    f"mount -t f2fs -o rw,noatime {device_path} {mount_point} 2>/dev/null || "
+                    f"mount -t f2fs -o ro {device_path} {mount_point}"
+                )
+            elif fs_type in ("squashfs", "erofs", "romfs"):
+                # Read-only filesystems — system/vendor partitions
+                mount_cmd = f"mount -t {fs_type} -o ro {device_path} {mount_point}"
+            elif fs_type == "ntfs":
+                # Try ntfs-3g for rw, fall back to read-only
+                mount_cmd = (
+                    f"ntfs-3g -o rw,noatime {device_path} {mount_point} 2>/dev/null || "
+                    f"mount -t ntfs -o ro {device_path} {mount_point}"
+                )
+            elif fs_type in ("vfat", "msdos", "fat", "fat32"):
+                mount_cmd = (
+                    f"mount -t vfat -o rw,noatime,utf8 {device_path} {mount_point}"
+                )
+            elif fs_type == "exfat":
+                mount_cmd = (
+                    f"mount -t exfat -o rw,noatime {device_path} {mount_point} 2>/dev/null || "
+                    f"mount.exfat-fuse {device_path} {mount_point}"
+                )
+            elif fs_type == "":
+                # blkid found nothing — might be raw/unformatted or an unrecognized type
+                logger.warning("[CORE] hot_mount: blkid returned no type for %s, trying auto", device_path)
+                mount_cmd = f"mount -o rw,noatime {device_path} {mount_point}"
+            else:
+                # Unknown type — let the kernel figure it out
+                logger.info("[CORE] hot_mount: unknown fs type '%s', using -t auto", fs_type)
+                mount_cmd = f"mount -t {fs_type} -o rw,noatime {device_path} {mount_point}"
+
+            out = self.execute_command(f"{mount_cmd} 2>&1 || echo MOUNT_FAILED").strip()
+            if "MOUNT_FAILED" in out or "error" in out.lower() or "invalid" in out.lower():
+                logger.warning("[CORE] hot_mount: mount command output: %s", out)
+
+            # 3. Verify
+            check = self.execute_command(
+                f"mountpoint -q {mount_point} && echo OK || echo FAIL"
+            ).strip()
+
+            if "OK" in check:
+                logger.info("[CORE] hot_mount: ✓ %s (%s) → %s", device_path, fs_type, mount_point)
+                return True
+
+            logger.warning("[CORE] hot_mount: ✗ mount verify failed for %s (fs=%s)", device_path, fs_type)
+            return False
+
+        except Exception as exc:
+            logger.error("[CORE] hot_mount error: %s", exc)
+            return False
 
     # ── Health check ──────────────────────────────────────────────────────
 
@@ -236,7 +324,10 @@ class SSHWorker:
             f"Failed to mount any of {candidates} at {cfg.MOUNT_POINT}."
         )
 
-    def list_bloatware(self, skip_packages: bool = False) -> dict[str, list[dict]]:
+    def list_bloatware(self, skip_packages: bool = False, base_path: str = None) -> dict[str, list[dict]]:
+        if base_path is None:
+            base_path = cfg.MOUNT_POINT
+
         result: dict[str, list[dict]] = {
             "app": [], "priv-app": [],
             "vendor-app": [], "vendor-priv-app": [],
@@ -259,7 +350,7 @@ class SSHWorker:
             ("vendor-priv-app", "/system/vendor/priv-app"),
         ]
 
-        logger.info("[DEBLOAT] Starting APK scan (skip_packages=%s)...", skip_packages)
+        logger.info("[DEBLOAT] Starting APK scan at %s (skip_packages=%s)...", base_path, skip_packages)
 
         if not skip_packages:
             try:
@@ -272,14 +363,16 @@ class SSHWorker:
         found_packages = set()
 
         for category, subpath in candidates:
-            base_path = f"{cfg.MOUNT_POINT}{subpath}"
+            # Construct the full path using the passed base_path
+            full_path = f"{base_path.rstrip('/')}{subpath}"
             
             # Check if directory exists
-            check = self.execute_command(f"[ -d {base_path} ] && echo YES || echo NO")
+            check = self.execute_command(f"[ -d {full_path} ] && echo YES || echo NO")
             if check.strip() != "YES":
                 continue
             
             # Found a valid root for this category
+
             if category not in category_roots:
                 category_roots[category] = subpath
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import osToast from '../OS/osToast';
+import osToast from '../osToast';
 const toast = osToast;
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -9,10 +9,10 @@ import {
   FolderPlus, Upload, ArrowUpDown, Check, Trash2, Square, CheckSquare,
   Search, Copy, UploadCloud
 } from 'lucide-react'
-import { FileExplorerAPI } from '../../services/api'
-import FileEditorModal from './FileEditorModal'
-import ConfirmDialog from '../ConfirmDialog'
-import ConflictDialog from '../ConflictDialog'
+import { FileExplorerAPI } from '../../../services/api'
+import ConfirmDialog from '../../ConfirmDialog'
+import ConflictDialog from '../../ConflictDialog'
+import { useWindowManager } from '../../../store/useWindowManager'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -65,7 +65,7 @@ function Skeleton() {
 
 // ── Context Menu ──────────────────────────────────────────────────────────────
 
-function ContextMenu({ x, y, item, currentPath, onClose, onRefresh, onOpenEditor, onOpenBinaryDialog, onChecksum, onDelete }) {
+function ContextMenu({ x, y, item, currentPath, onClose, onRefresh, onOpenBinaryDialog, onChecksum, onDelete, openWindow }) {
   const menuRef = useRef(null)
   const { t } = useTranslation()
 
@@ -103,8 +103,8 @@ function ContextMenu({ x, y, item, currentPath, onClose, onRefresh, onOpenEditor
   const handleExtract = async () => {
     onClose()
     try {
-      const { FileExplorerAPI: api } = await import('../../services/api')
-      const apiClient = (await import('../../services/api')).default
+      const { FileExplorerAPI: api } = await import('../../../services/api')
+      const apiClient = (await import('../../../services/api')).default
       toast.info('Extracting with 7-Zip…')
       await apiClient.post('/api/core/files/extract', { path: targetPath, dest_path: currentPath })
       toast.success('Extracted successfully')
@@ -134,7 +134,13 @@ function ContextMenu({ x, y, item, currentPath, onClose, onRefresh, onOpenEditor
       if (data.is_binary) {
         onOpenBinaryDialog({ path: targetPath, name: item.name })
       } else {
-        onOpenEditor(targetPath)
+        openWindow({
+          id: `notepad-${targetPath}`,
+          label: item.name,
+          icon: 'FileCode',
+          component: 'NotepadApp',
+          filePath: targetPath
+        })
       }
     } catch (err) {
       toast.dismiss(tid)
@@ -313,10 +319,11 @@ function ChecksumDialog({ data, onClose }) {
   )
 }
 
-// ── Main Modal ────────────────────────────────────────────────────────────────
+// ── Main App ────────────────────────────────────────────────────────────────
 
-export default function FileExplorerModal({ onClose }) {
-  const [currentPath, setCurrentPath] = useState('/')
+export default function GuestFileExplorerApp({ windowData }) {
+  const { initialPath, id: windowId } = windowData || {};
+  const [currentPath, setCurrentPath] = useState(initialPath || '/')
   const [files, setFiles] = useState([])
   const [loading, setLoading] = useState(false)
   const [selected, setSelected] = useState(null)              // single hover-selected row
@@ -328,8 +335,12 @@ export default function FileExplorerModal({ onClose }) {
   const [newFolderName, setNewFolderName] = useState('')
   const newFolderInputRef = useRef(null)
   const fileInputRef = useRef(null)
+  
+  const openWindow = useWindowManager(state => state.openWindow)
+  const closeWindowFn = useWindowManager(state => state.closeWindow)
+  const onClose = () => closeWindowFn(windowId)
+
   // Editor states
-  const [editorPath, setEditorPath] = useState(null)     // truthy → open FileEditorModal
   const [binaryFile, setBinaryFile] = useState(null)     // truthy → open BinaryFileDialog
   const [checksumData, setChecksumData] = useState(null) // truthy → open ChecksumDialog { name, algo, hash }
 
@@ -371,10 +382,10 @@ export default function FileExplorerModal({ onClose }) {
 
   // Close on Escape
   useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    const handler = (e) => { if (e.key === 'Escape') closeWindowFn(windowId) }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
+  }, [closeWindowFn, windowId])
 
   // ── Navigation ───────────────────────────────────────────────────────────
 
@@ -639,23 +650,7 @@ export default function FileExplorerModal({ onClose }) {
   const isBulkMode = bulkSelected.size > 0
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm md:p-4">
-      {/* Editor Modal */}
-      <AnimatePresence>
-        {editorPath && (
-          <FileEditorModal
-            filePath={editorPath}
-            onClose={() => setEditorPath(null)}
-            onDownload={() => {
-              setEditorPath(null)
-              const name = editorPath.split('/').pop()
-              toast.info(`Downloading "${name}"…`)
-              FileExplorerAPI.download(editorPath, name)
-            }}
-          />
-        )}
-      </AnimatePresence>
-
+    <div className="flex flex-col w-full h-full bg-[var(--bg-card)] text-[var(--text-primary)]">
       {/* Binary File Dialog */}
       <AnimatePresence>
         {binaryFile && (
@@ -699,17 +694,8 @@ export default function FileExplorerModal({ onClose }) {
         onCancel={() => setConflictDialog({ isOpen: false, file: null, originalFile: null })}
       />
 
-      <motion.div
-        initial={{ opacity: 0, scale: 0.96, y: 12 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.96, y: 12 }}
-        transition={{ duration: 0.18 }}
-        className="
-          flex flex-col overflow-hidden shadow-2xl
-          bg-[var(--bg-card)] border-[var(--border)]
-          fixed inset-0 w-full h-full rounded-none
-          md:relative md:inset-auto md:w-[90vw] md:h-[85vh] md:max-w-7xl md:rounded-xl md:border
-        "
+      <div
+        className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden relative"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -732,7 +718,7 @@ export default function FileExplorerModal({ onClose }) {
 
         {/* ── Header ── */}
         <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-secondary)] shrink-0">
-          <span className="hidden lg:inline text-sm font-semibold text-[var(--text-primary)] mr-1">📂 File Explorer</span>
+
 
           {/* Search Bar */}
           <div className="flex items-center gap-2 bg-[var(--bg-primary)] px-2 py-1 rounded-md border border-[var(--border)] focus-within:ring-1 focus-within:ring-blue-500/50 mx-2">
@@ -791,13 +777,7 @@ export default function FileExplorerModal({ onClose }) {
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button
-            onClick={onClose}
-            title="Close"
-            className="p-1.5 rounded-md hover:bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors ml-1"
-          >
-            <X className="w-4 h-4" />
-          </button>
+
         </div>
 
         {/* ── Toolbar ── */}
@@ -989,15 +969,15 @@ export default function FileExplorerModal({ onClose }) {
           )}
         </div>
 
-        {/* ── Status Bar ── */}
-        <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--border)] bg-[var(--bg-secondary)] text-[11px] text-[var(--text-muted)] shrink-0">
-          <span>{displayList.length} item{displayList.length !== 1 ? 's' : ''}</span>
-          <span>
-            {selected ? `Selected: ${selected}` : 'Right-click an item for options'}
-          </span>
+        {/* Bottom Status Bar */}
+        <div className="flex items-center justify-between px-4 py-2 bg-[var(--bg-secondary)] border-t border-[var(--border)] text-xs text-[var(--text-muted)] shrink-0 select-none">
+          <div className="flex gap-4">
+            <span>{files.length} items</span>
+            {bulkSelected.size > 0 && <span className="text-[var(--text-primary)] font-medium">{bulkSelected.size} selected</span>}
+          </div>
         </div>
-      </motion.div>
 
+      </div>
       {/* ── Context Menu ── */}
       <AnimatePresence>
         {contextMenu && (
@@ -1015,10 +995,10 @@ export default function FileExplorerModal({ onClose }) {
               currentPath={currentPath}
               onClose={() => setContextMenu(null)}
               onRefresh={() => fetchFiles(currentPath)}
-              onOpenEditor={setEditorPath}
-              onOpenBinaryDialog={setBinaryFile}
+              onOpenBinaryDialog={file => setBinaryFile(file)}
               onChecksum={handleChecksum}
               onDelete={handleSingleDeleteRequest}
+              openWindow={openWindow}
             />
           </motion.div>
         )}
